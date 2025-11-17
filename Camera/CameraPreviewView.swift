@@ -20,7 +20,7 @@ final class CameraPreviewUIView: UIView {
     private let reprojLayer = ReprojectionOverlayLayer()
     private let poseLayer = PoseOverlayLayer()
 
-    // We need intrinsics for projection overlays
+    // Intrinsics provided externally
     private var intrinsics: CameraIntrinsics?
 
     override init(frame: CGRect) {
@@ -47,12 +47,9 @@ final class CameraPreviewUIView: UIView {
         VisionPipeline.shared.onFrame = { [weak self] frameData in
             guard let self = self else { return }
 
-            // Intrinsics must be passed set externally.
-            guard let intr = self.intrinsics else {
-                self.dotLayer.update(frame: frameData)
-                return
-            }
+            let intr = self.intrinsics
 
+            // Update overlays with model-1 pattern
             self.dotLayer.update(frame: frameData)
             self.reprojLayer.update(frame: frameData, intrinsics: intr)
             self.poseLayer.update(frame: frameData, intrinsics: intr)
@@ -63,7 +60,7 @@ final class CameraPreviewUIView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // External setter — CameraManager should provide this
+    // External setter — CameraManager should call this once intrinsics are known
     func setIntrinsics(_ intr: CameraIntrinsics) {
         self.intrinsics = intr
     }
@@ -71,10 +68,7 @@ final class CameraPreviewUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
 
-        // Match preview layer to full view
         previewLayer.frame = bounds
-
-        // Fit each overlay to view
         dotLayer.frame = bounds
         reprojLayer.frame = bounds
         poseLayer.frame = bounds
@@ -96,13 +90,14 @@ struct CameraPreviewView: UIViewRepresentable {
     let intrinsics: CameraIntrinsics?
 
     func makeUIView(context: Context) -> CameraPreviewUIView {
-        let v = CameraPreviewUIView()
-        v.attachSession(session)
+        let view = CameraPreviewUIView()
+        view.attachSession(session)
 
         if let intr = intrinsics {
-            v.setIntrinsics(intr)
+            view.setIntrinsics(intr)
         }
-        return v
+
+        return view
     }
 
     func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {

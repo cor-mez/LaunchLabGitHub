@@ -13,63 +13,77 @@ import UIKit
 public final class CameraManager: NSObject, ObservableObject {
 
     // ---------------------------------------------------------
-    // MARK: - Public API
+    // MARK: - Singleton
     // ---------------------------------------------------------
     public static let shared = CameraManager()
 
+    // ---------------------------------------------------------
+    // MARK: - Capture Properties
+    // ---------------------------------------------------------
     private let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
 
-    private var permissionGranted = false
-
-    /// Latest active intrinsics
-    @Published public private(set) var intrinsics: CameraIntrinsics = .manual
-
-    private override init() {
-        super.init()
-    }
+    /// Public getter for UI
+    public var cameraSession: AVCaptureSession { session }
 
     // ---------------------------------------------------------
-    // MARK: - Permissions
+    // MARK: - Authorization
     // ---------------------------------------------------------
-    public func requestPermissions() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+    @Published public private(set) var authorizationStatus: AVAuthorizationStatus = .notDetermined
+
+    public func checkAuth() async {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        authorizationStatus = status
+
+        switch status {
         case .authorized:
-            permissionGranted = true
-            return true
+            return
 
         case .notDetermined:
             let granted = await AVCaptureDevice.requestAccess(for: .video)
-            permissionGranted = granted
-            return granted
+            authorizationStatus = granted ? .authorized : .denied
 
         default:
-            return false
+            return
         }
+    }
+
+    // ---------------------------------------------------------
+    // MARK: - Intrinsics (Updated each frame)
+    // ---------------------------------------------------------
+    @Published public private(set) var intrinsics =
+        CameraIntrinsics.zero
+
+    // ---------------------------------------------------------
+    // MARK: - Init
+    // ---------------------------------------------------------
+    private override init() {
+        super.init()
     }
 
     // ---------------------------------------------------------
     // MARK: - Start Session
     // ---------------------------------------------------------
     public func start() async {
-        guard permissionGranted else { return }
+        guard authorizationStatus == .authorized else { return }
 
         session.beginConfiguration()
         session.sessionPreset = .hd1280x720
 
-        // Device
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                   for: .video,
-                                                   position: .back)
-        else {
-            print("❌ No back camera")
+        // Camera device
+        guard let device = AVCaptureDevice.default(
+            .builtInWideAngleCamera,
+            for: .video,
+            position: .back
+        ) else {
+            print("❌ No back camera available")
             session.commitConfiguration()
             return
         }
 
         // Input
         guard let input = try? AVCaptureDeviceInput(device: device) else {
-            print("❌ Unable to create input")
+            print("❌ Unable to create camera input")
             session.commitConfiguration()
             return
         }
@@ -84,9 +98,9 @@ public final class CameraManager: NSObject, ObservableObject {
         ]
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
-        if let c = videoOutput.connection(with: .video),
-           c.isVideoOrientationSupported {
-            c.videoOrientation = .portrait
+        if let connection = videoOutput.connection(with: .video),
+           connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
         }
 
         session.commitConfiguration()
@@ -98,7 +112,7 @@ public final class CameraManager: NSObject, ObservableObject {
     }
 
     // ---------------------------------------------------------
-    // MARK: - Preview Layer
+    // MARK: - Preview Layer (UI Convenience)
     // ---------------------------------------------------------
     public func makePreviewLayer() -> AVCaptureVideoPreviewLayer {
         let layer = AVCaptureVideoPreviewLayer(session: session)
@@ -110,31 +124,36 @@ public final class CameraManager: NSObject, ObservableObject {
     // MARK: - Intrinsics Extraction
     // ---------------------------------------------------------
     private func updateIntrinsics(from sampleBuffer: CMSampleBuffer) {
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer)
-        else { return }
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
 
-        let camMatrixKey = "CameraIntrinsicMatrix" as CFString
+        let key = "CameraIntrinsicMatrix" as CFString
 
-        guard let ext = CMFormatDescriptionGetExtension(formatDesc,
-                                                        extensionKey: camMatrixKey)
-        else { return }
-
-        guard let dict = ext as? [String: Any],
+        guard let ext = CMFormatDescriptionGetExtension(formatDesc, extensionKey: key),
+              let dict = ext as? [String: Any],
               let data = dict["data"] as? [NSNumber],
               data.count == 9
         else { return }
+
+        let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
 
         let fx = Float(truncating: data[0])
         let fy = Float(truncating: data[4])
         let cx = Float(truncating: data[2])
         let cy = Float(truncating: data[5])
 
-        intrinsics = CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy)
+        intrinsics = CameraIntrinsics(
+            fx: fx,
+            fy: fy,
+            cx: cx,
+            cy: cy,
+            width: Int(dims.width),
+            height: Int(dims.height)
+        )
     }
 }
 
 // -------------------------------------------------------------
-// MARK: - Delegate
+// MARK: - SampleBuffer Delegate (Nonisolated)
 // -------------------------------------------------------------
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
@@ -145,13 +164,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
 
         guard let pb = sampleBuffer.imageBuffer else { return }
-
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
 
-        // Send to vision pipeline
-        VisionPipeline.shared.processFrame(pixelBuffer: pb, timestamp: timestamp)
+        // VisionPipeline is @MainActor → hop to main
+        Task { @MainActor in
+            VisionPipeline.shared.process(pixelBuffer: pb, timestamp: timestamp)
+        }
 
-        // Intrinsics update → MainActor
+        // Update intrinsics (also requires MainActor)
         Task { @MainActor [weak self] in
             self?.updateIntrinsics(from: sampleBuffer)
         }

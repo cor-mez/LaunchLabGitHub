@@ -1,7 +1,35 @@
-//
-//  LaunchLabGithub.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 11/16/25.
-//
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
 
+    <!-- Camera access -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!-- Microphone access -->
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+
+    <!-- Network client -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- App groups -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.corymeza.launchlab.shared</string>
+    </array>
+
+    <!-- Allow read-only user-selected file access -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <!-- Advanced CoreML provisioning -->
+    <key>com.apple.security.cs.allow-objc-interpretation</key>
+    <false/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+</dict>
+</plist>

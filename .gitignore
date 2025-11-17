@@ -1,0 +1,84 @@
+##########################
+# LaunchLabGitHub .gitignore
+##########################
+
+# macOS system junk
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user data
+xcuserdata/
+project.xcworkspace/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Build products
+DerivedData/
+build/
+Build/
+*.o
+*.ipa
+*.dSYM
+
+# Swift Package Manager
+.build/
+
+# CocoaPods (not used now, safe to ignore)
+Pods/
+Podfile.lock
+
+# Carthage (not used now)
+Carthage/Build/
+
+# Fastlane (future)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+
+##############################################
+# OpenCV — Must NEVER go into GitHub (large)
+##############################################
+
+Vision/Cpp/opencv2.framework/
+opencv2.framework/
+*.framework/
+*.xcframework
+*.zip
+*.tar
+*.7z
+
+##############################################
+# Temporary / swap files
+##############################################
+
+*.swp
+*.lock
+*.tmp
+*.temp
+*.bak
+*.orig
+
+##############################################
+# Logs & local debug files
+##############################################
+
+*.log
+*.trace
+
+##############################################
+# Xcode environment files (your folder had one)
+##############################################
+
+.xcode.env
+.xcode.env.txt
+
+##############################################
+# Ignore editor files
+##############################################
+
+*.vscode
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
