@@ -1,88 +1,88 @@
-//
-//  VisionPipeline.swift
-//  LaunchLab
-//
+// VisionPipeline.swift
+// Example integration of VelocityTracker (final stage: DotDetector → DotTracker → PoseSolver → VelocityTracker)
 
 import Foundation
 import CoreVideo
-import simd
+import CoreGraphics
 
-/// Stateless per-frame pipeline:
-/// 1. Detect dots
-/// 2. Solve pose
-/// 3. Build VisionFrameData
-/// 4. Emit to overlays
-@MainActor
 public final class VisionPipeline {
 
-    // Singleton (MainActor)
-    public static let shared = VisionPipeline()
-
-    // Core modules (pure Swift)
-    private let detector = DotDetector()
+    // Existing components
+    private let dotDetector = DotDetector()
+    private let dotTracker = DotTracker()
     private let poseSolver = PoseSolver()
 
-    /// Frame callback for overlays/UI
-    public var onFrame: ((VisionFrameData) -> Void)?
+    // New component
+    private let velocityTracker = VelocityTracker()
 
-    private init() {}
+    public init() {}
 
-    // ---------------------------------------------------------
-    // MARK: - Entry Point (from CameraManager)
-    // ---------------------------------------------------------
-    public func process(pixelBuffer pb: CVPixelBuffer, timestamp: Double) {
+    /// Main entry point used by CameraManager.
+    ///
+    /// - Parameters:
+    ///   - pixelBuffer: Current frame buffer.
+    ///   - timestamp: Frame timestamp in seconds.
+    ///   - intrinsics: Camera intrinsics (dynamic or fallback).
+    ///
+    /// - Returns: VisionFrameData for overlays.
+    public func processFrame(
+        pixelBuffer: CVPixelBuffer,
+        timestamp: Double,
+        intrinsics: CameraIntrinsics
+    ) -> VisionFrameData {
 
-        // Extract buffer dims
-        let width = CVPixelBufferGetWidth(pb)
-        let height = CVPixelBufferGetHeight(pb)
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        // Lock Y-plane
-        CVPixelBufferLockBaseAddress(pb, .readOnly)
-        let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0)
-        let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
-        CVPixelBufferUnlockBaseAddress(pb, .readOnly)
+        // 1) Detect dots (stateless)
+        let detectedDots = dotDetector.detectDots(
+            in: pixelBuffer,
+            width: width,
+            height: height
+        )
 
-        guard let yPtr = base?.assumingMemoryBound(to: UInt8.self) else { return }
-
-        // ---------------------------------------------------------
-        // 1. Dot Detection (stateless)
-        // ---------------------------------------------------------
-        let dots = detector.detectDots(
-            yPtr: yPtr,
+        // 2) Track / stabilize IDs (existing DotTracker behavior)
+        let trackedDots = dotTracker.trackDots(
+            detectedDots,
             width: width,
             height: height,
-            stride: stride,
             timestamp: timestamp
         )
 
-        // ---------------------------------------------------------
-        // 2. Pose Solve (stateless)
-        // ---------------------------------------------------------
-        // Use LIVE METADATA intrinsics (from CameraManager)
-        let intr = CameraManager.shared.intrinsics
-
-        let pts2D = dots.map { $0.position }
+        // 3) Solve pose from tracked dots
+        let imagePoints = trackedDots.map { CGPoint(x: $0.position.x, y: $0.position.y) }
+        let modelPoints = DotPattern.shared.modelPoints   // adjust if your pattern lives elsewhere
 
         let pose = poseSolver.solvePose(
-            modelPoints: MarkerPattern.model3D,
-            imagePoints: pts2D,
-            intrinsics: intr
+            modelPoints: modelPoints,
+            imagePoints: imagePoints,
+            intrinsics: intrinsics
         )
 
-        // ---------------------------------------------------------
-        // 3. Build VisionFrameData
-        // ---------------------------------------------------------
-        let frame = VisionFrameData(
-            dots: dots,
+        // 4) VelocityTracker: compute per-dot flow + predicted next position
+        let velocityDots = velocityTracker.process(
+            dots: trackedDots,
+            pixelBuffer: pixelBuffer,
+            timestamp: timestamp
+        )
+
+        // 5) Build frame data (Model 1: latestFrame used by overlays)
+        let frameData = VisionFrameData(
+            dots: velocityDots,
             pose: pose,
             width: width,
             height: height,
-            timestamp: timestamp
+            timestamp: timestamp,
+            intrinsics: intrinsics
         )
 
-        // ---------------------------------------------------------
-        // 4. Emit to overlays/UI
-        // ---------------------------------------------------------
-        onFrame?(frame)
+        return frameData
+    }
+
+    /// Reset internal state when capture restarts or configuration changes.
+    public func reset() {
+        velocityTracker.reset()
+        dotTracker.reset()
+        // dotDetector and poseSolver remain stateless by design
     }
 }
