@@ -1,28 +1,38 @@
-// VisionDot.swift
+//
+//  VisionDot.swift
+//  LaunchLab
+//
+
 import CoreGraphics
-import simd
 
-public struct VisionDot {
-    public let id: Int
-    public var position: CGPoint
-    public var predicted: CGPoint?
-    public var confidence: Float
-    public var fbError: Float
-    public var flow: SIMD2<Float>?   // NEW FIELD
+struct VisionDot: Identifiable, Equatable {
+    let id: Int
+    let position: CGPoint
+    let predicted: CGPoint?
+    let velocity: CGVector?
 
-    public init(
+    init(
         id: Int,
         position: CGPoint,
         predicted: CGPoint? = nil,
-        confidence: Float = 1.0,
-        fbError: Float = 0.0,
-        flow: SIMD2<Float>? = nil
+        velocity: CGVector? = nil
     ) {
         self.id = id
         self.position = position
         self.predicted = predicted
-        self.confidence = confidence
-        self.fbError = fbError
-        self.flow = flow
+        self.velocity = velocity
+    }
+
+    func updating(
+        position: CGPoint? = nil,
+        predicted: CGPoint? = nil,
+        velocity: CGVector? = nil
+    ) -> VisionDot {
+        VisionDot(
+            id: id,
+            position: position ?? self.position,
+            predicted: predicted ?? self.predicted,
+            velocity: velocity ?? self.velocity
+        )
     }
 }

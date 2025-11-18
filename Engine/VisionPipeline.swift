@@ -1,88 +1,136 @@
-// VisionPipeline.swift
-// Example integration of VelocityTracker (final stage: DotDetector → DotTracker → PoseSolver → VelocityTracker)
+//
+//  VisionPipeline.swift
+//  LaunchLab
+//
 
 import Foundation
 import CoreVideo
-import CoreGraphics
+import CoreMedia
+import QuartzCore
+import simd
 
-public final class VisionPipeline {
+final class VisionPipeline {
 
-    // Existing components
-    private let dotDetector = DotDetector()
-    private let dotTracker = DotTracker()
-    private let poseSolver = PoseSolver()
+    private let detector = DotDetector()
+    private let tracker = DotTracker()
+    private let lk = PyrLKRefiner()
+    private let velocity = VelocityTracker()
+    private let pose = PoseSolver()
+    private let profiler = FrameProfiler.shared
 
-    // New component
-    private let velocityTracker = VelocityTracker()
+    private let rspnp = RSPnPSolver()
+    private let rsTiming = RSTimingModel()
+    private let rsBV = RSBearingVectors()
+    private let rsLine = RSLineIndex()
+    private let rsCorr = RSGeometricCorrector()
 
-    public init() {}
+    private let dotModel = DotModel()
 
-    /// Main entry point used by CameraManager.
-    ///
-    /// - Parameters:
-    ///   - pixelBuffer: Current frame buffer.
-    ///   - timestamp: Frame timestamp in seconds.
-    ///   - intrinsics: Camera intrinsics (dynamic or fallback).
-    ///
-    /// - Returns: VisionFrameData for overlays.
-    public func processFrame(
-        pixelBuffer: CVPixelBuffer,
-        timestamp: Double,
-        intrinsics: CameraIntrinsics
-    ) -> VisionFrameData {
+    func process(prev: VisionFrameData?, curr: VisionFrameData) -> VisionFrameData {
 
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let t_total = profiler.begin("total_pipeline")
 
-        // 1) Detect dots (stateless)
-        let detectedDots = dotDetector.detectDots(
-            in: pixelBuffer,
-            width: width,
-            height: height
+        // 1. DETECTOR
+        let t_det = profiler.begin("detector")
+        let detectedPoints = detector.detect(in: curr.pixelBuffer)
+        profiler.end("detector", t_det)
+
+        // 2. TRACKER
+        let t_trk = profiler.begin("tracker")
+        let prevDots = prev?.dots ?? []
+        let tracked = tracker.track(prev: prevDots, currPoints: detectedPoints)
+        profiler.end("tracker", t_trk)
+
+        // 3. PYR LK
+        let t_lk = profiler.begin("lk_refiner")
+        let refined = prev != nil
+            ? lk.refine(prevFrame: prev!, currFrame: curr, tracked: tracked)
+            : tracked
+        profiler.end("lk_refiner", t_lk)
+
+        // 4. VELOCITY KF
+        let t_vel = profiler.begin("velocity")
+        let withVel = velocity.process(refined, timestamp: curr.timestamp)
+        profiler.end("velocity", t_vel)
+
+        // 5. POSE SOLVER
+        let t_pose = profiler.begin("pose")
+        let imagePoints = withVel.map {
+            SIMD2<Float>(Float($0.position.x), Float($0.position.y))
+        }
+        let poseOut = pose.solve(
+            imagePoints: imagePoints,
+            intrinsics: curr.intrinsics.matrix
+        )
+        profiler.end("pose", t_pose)
+
+        // 6. RS LINE INDICES
+        let lineIndex = rsLine.compute(
+            frame: curr,
+            imagePoints: imagePoints
         )
 
-        // 2) Track / stabilize IDs (existing DotTracker behavior)
-        let trackedDots = dotTracker.trackDots(
-            detectedDots,
-            width: width,
-            height: height,
-            timestamp: timestamp
+        // 7. RS TIMING
+        let rsTimes = rsTiming.computeDotTimes(
+            frame: curr,
+            dotPositions: imagePoints
         )
 
-        // 3) Solve pose from tracked dots
-        let imagePoints = trackedDots.map { CGPoint(x: $0.position.x, y: $0.position.y) }
-        let modelPoints = DotPattern.shared.modelPoints   // adjust if your pattern lives elsewhere
+        // 8. RS BEARINGS
+        let modelPoints = (0..<DotModel.count).map { dotModel.point(for: $0) }
+        let bearings = rsBV.compute(
+            imagePoints: imagePoints,
+            modelPoints: modelPoints,
+            timestamps: rsTimes,
+            intrinsics: curr.intrinsics.matrix
+        )
 
-        let pose = poseSolver.solvePose(
+        // -----------------------------------------------------
+        // 9. RS GEOMETRIC CORRECTION (v1.5)
+        // -----------------------------------------------------
+        let baseRot = poseOut?.R.toQuaternion ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0,1,0))
+        let baseT   = poseOut?.T ?? SIMD3<Float>(0,0,0)
+        let v       = SIMD3<Float>(0,0,0) // translational velocity placeholder
+        let w       = SIMD3<Float>(0,0,0) // angular velocity placeholder
+        let ts0     = Float(curr.timestamp)
+
+        let corrected = rsCorr.correct(
+            bearings: bearings,
+            baseRotation: baseRot,
+            translation: baseT,
+            velocity: v,
+            angularVelocity: w,
+            baseTimestamp: ts0
+        )
+
+        // 10. RS-PnP Stub
+        let rspnpResult = rspnp.solve(
+            frame: curr,
             modelPoints: modelPoints,
             imagePoints: imagePoints,
-            intrinsics: intrinsics
+            timestamps: rsTimes
         )
 
-        // 4) VelocityTracker: compute per-dot flow + predicted next position
-        let velocityDots = velocityTracker.process(
-            dots: trackedDots,
-            pixelBuffer: pixelBuffer,
-            timestamp: timestamp
+        // 11. BUILD FRAME
+        let out = VisionFrameData(
+            pixelBuffer: curr.pixelBuffer,
+            width: curr.width,
+            height: curr.height,
+            timestamp: curr.timestamp,
+            intrinsics: curr.intrinsics,
+            pose: poseOut,
+            dots: withVel
         )
 
-        // 5) Build frame data (Model 1: latestFrame used by overlays)
-        let frameData = VisionFrameData(
-            dots: velocityDots,
-            pose: pose,
-            width: width,
-            height: height,
-            timestamp: timestamp,
-            intrinsics: intrinsics
-        )
+        out.rsLineIndex = lineIndex
+        out.rsTimestamps = rsTimes
+        out.rsBearings = bearings
+        out.rsCorrected = corrected
+        out.rspnp = rspnpResult
 
-        return frameData
-    }
+        profiler.end("total_pipeline", t_total)
+        profiler.nextFrame()
 
-    /// Reset internal state when capture restarts or configuration changes.
-    public func reset() {
-        velocityTracker.reset()
-        dotTracker.reset()
-        // dotDetector and poseSolver remain stateless by design
+        return out
     }
 }

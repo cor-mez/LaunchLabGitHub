@@ -1,99 +1,87 @@
-// VelocityTracker.swift
-// Stateless externally; internal state across frames.
+//
+//  VelocityTracker.swift
+//  LaunchLab
+//
 
-import Foundation
 import CoreGraphics
-import CoreVideo
 import simd
 
-/// Per-dot history used by VelocityTracker
-private struct VelocityDotState {
-    var lastPosition: CGPoint
-    var lastTimestamp: Double
-}
+final class VelocityTracker {
 
-public final class VelocityTracker {
+    private var filters: [Int: KalmanFilter2D] = [:]
+    private var lastTimestamp: CFTimeInterval?
 
-    // MARK: - Configuration
+    // ---------------------------------------------------------
+    // MARK: - Velocity Gating
+    // ---------------------------------------------------------
+    private func gatedVelocity(_ v: CGVector) -> CGVector {
+        let dx = v.dx, dy = v.dy
 
-    /// Max time gap we treat as “continuous” (seconds). Larger gaps reset prediction.
-    private let maxContinuousDeltaTime: Double = 1.0 / 30.0 // ~33 ms
+        if dx.isNaN || dy.isNaN || !dx.isFinite || !dy.isFinite {
+            return .zero
+        }
+        let mag = sqrt(dx*dx + dy*dy)
+        if mag <= 4 { return v }
 
-    // MARK: - State
+        let scale = 4.0 / mag
+        return CGVector(dx: dx * scale, dy: dy * scale)
+    }
 
-    private var dotStates: [Int: VelocityDotState] = [:]
-    private var lastTimestamp: Double?
-    private var lastPixelBuffer: CVPixelBuffer?
+    // ---------------------------------------------------------
+    // MARK: - Process
+    // ---------------------------------------------------------
+    func process(_ dots: [VisionDot], timestamp: CFTimeInterval) -> [VisionDot] {
 
-    // MARK: - Public API
+        // Compute dt
+        var dt: Float = 1.0 / 240.0
+        if let last = lastTimestamp {
+            let raw = timestamp - last
+            if raw > 0.0005 && raw < 0.03 {
+                dt = Float(raw)
+            }
+        }
+        lastTimestamp = timestamp
 
-    /// Call once per frame AFTER DotTracker + PoseSolver.
-    ///
-    /// - Parameters:
-    ///   - dots: Tracked dots for the current frame (with stable IDs).
-    ///   - pixelBuffer: Current frame buffer (stored for future LK use).
-    ///   - timestamp: Current frame timestamp in seconds.
-    ///
-    /// - Returns: Updated dots with `flow` and `predicted` filled where possible.
-    public func process(
-        dots: [VisionDot],
-        pixelBuffer: CVPixelBuffer,
-        timestamp: Double
-    ) -> [VisionDot] {
+        var out: [VisionDot] = []
+        out.reserveCapacity(dots.count)
 
-        let previousTimestamp = lastTimestamp
-        let dtRaw = timestamp - (previousTimestamp ?? timestamp)
-        let dt = dtRaw > 0 ? dtRaw : 0
+        for d in dots {
 
-        var updatedDots: [VisionDot] = []
-        updatedDots.reserveCapacity(dots.count)
+            // --------------------------------------------
+            // Init or update KF
+            // --------------------------------------------
+            let pos = d.position
 
-        // If we don’t have previous data or dt is too large, treat as reset.
-        let shouldReset = previousTimestamp == nil || dt <= 0 || dt > maxContinuousDeltaTime
-
-        for var dot in dots {
-            guard !shouldReset,
-                  let state = dotStates[dot.id] else {
-                // No valid history for this dot
-                dot.flow = nil
-                dot.predicted = nil
-                updatedDots.append(dot)
-                continue
+            let kf: KalmanFilter2D
+            if let existing = filters[d.id] {
+                kf = existing
+                kf.predict(dt: dt)
+                kf.update(measuredPos: pos)
+            } else {
+                kf = KalmanFilter2D(initialPos: pos)
+                filters[d.id] = kf
             }
 
-            // Compute pixel displacement from last known position.
-            let dx = Float(dot.position.x - state.lastPosition.x)
-            let dy = Float(dot.position.y - state.lastPosition.y)
-            let flow = SIMD2<Float>(dx, dy)
-            dot.flow = flow
+            // --------------------------------------------
+            // Compute gated velocity + predicted
+            // --------------------------------------------
+            let rawV = kf.velocity
+            let v = gatedVelocity(rawV)
 
-            // Constant-velocity prediction for next frame:
-            // Predict position after another dt (same interval).
-            let nextX = dot.position.x + CGFloat(dx)
-            let nextY = dot.position.y + CGFloat(dy)
-            dot.predicted = CGPoint(x: nextX, y: nextY)
+            let predicted = CGPoint(
+                x: pos.x + v.dx * CGFloat(dt),
+                y: pos.y + v.dy * CGFloat(dt)
+            )
 
-            updatedDots.append(dot)
-        }
-
-        // Update internal state for next frame
-        lastTimestamp = timestamp
-        lastPixelBuffer = pixelBuffer
-        dotStates.removeAll(keepingCapacity: true)
-        for dot in updatedDots {
-            dotStates[dot.id] = VelocityDotState(
-                lastPosition: dot.position,
-                lastTimestamp: timestamp
+            out.append(
+                d.updating(predicted: predicted, velocity: v)
             )
         }
 
-        return updatedDots
-    }
+        // Prune filters for vanished dots
+        let activeIDs = Set(out.map { $0.id })
+        filters = filters.filter { activeIDs.contains($0.key) }
 
-    /// Reset all internal history, e.g. on capture restart or resolution change.
-    public func reset() {
-        dotStates.removeAll()
-        lastTimestamp = nil
-        lastPixelBuffer = nil
+        return out
     }
 }

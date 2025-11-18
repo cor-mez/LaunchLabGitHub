@@ -102,4 +102,77 @@ final class DotTrackingOverlayLayer: CALayer {
             }
         }
     }
+}    let maxArrowLength: CGFloat = 40.0
+                    let scale = min(maxArrowLength / magnitude, 0.25) // clamp for sanity
+
+                    let end = CGPoint(
+                        x: start.x + v.dx * scale,
+                        y: start.y + v.dy * scale
+                    )
+
+                    // Main line
+                    ctx.move(to: start)
+                    ctx.addLine(to: end)
+                    ctx.strokePath()
+
+                    // Simple arrowhead
+                    let angle = atan2(end.y - start.y, end.x - start.x)
+                    let arrowSize: CGFloat = 6.0
+
+                    let left = CGPoint(
+                        x: end.x - arrowSize * cos(angle - .pi / 6),
+                        y: end.y - arrowSize * sin(angle - .pi / 6)
+                    )
+                    let right = CGPoint(
+                        x: end.x - arrowSize * cos(angle + .pi / 6),
+                        y: end.y - arrowSize * sin(angle + .pi / 6)
+                    )
+
+                    ctx.move(to: end)
+                    ctx.addLine(to: left)
+                    ctx.move(to: end)
+                    ctx.addLine(to: right)
+                    ctx.strokePath()
+                }
+            }
+>>>>>>> origin/main
+            VisionOverlaySupport.drawCircle(
+                context: ctx,
+                at: mapped,
+                radius: 4,
+                color: color
+            )
+
+            // -----------------------------------------------------
+            // 3. Draw Dot ID
+            // -----------------------------------------------------
+            let idString = "\(dot.id)"
+            let idAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: 8, weight: .medium),
+                .foregroundColor: UIColor.white
+            ]
+            idString.draw(
+                at: CGPoint(x: mapped.x + 5, y: mapped.y - 5),
+                withAttributes: idAttrs
+            )
+
+            // -----------------------------------------------------
+            // 4. Draw Velocity Vector (scaled)
+            // -----------------------------------------------------
+            if let v = dot.velocity {
+                let scale: CGFloat = 4.0
+                let end = CGPoint(
+                    x: mapped.x + v.dx * scale,
+                    y: mapped.y + v.dy * scale
+                )
+
+                ctx.setStrokeColor(UIColor.cyan.cgColor)
+                ctx.setLineWidth(1)
+                ctx.beginPath()
+                ctx.move(to: mapped)
+                ctx.addLine(to: end)
+                ctx.strokePath()
+            }
+        }
+    }
 }

@@ -7,29 +7,113 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-final class PreviewView: UIView {
+// ------------------------------------------------------------
+// MARK: - SwiftUI View
+// ------------------------------------------------------------
+struct CameraPreviewView: UIViewRepresentable {
 
-    let previewLayer: AVCaptureVideoPreviewLayer
+    @EnvironmentObject var camera: CameraManager
 
-    init(session: AVCaptureSession) {
-        self.previewLayer = AVCaptureVideoPreviewLayer(session: session)
+    func makeUIView(context: Context) -> CameraPreviewContainer {
+        let container = CameraPreviewContainer(camera: camera)
+        return container
+    }
+
+    func updateUIView(_ uiView: CameraPreviewContainer, context: Context) {
+        uiView.updateOverlays()
+    }
+}
+
+
+// ============================================================
+// MARK: - UIKit Container View
+// ============================================================
+final class CameraPreviewContainer: UIView {
+
+    // MARK: - External Owner
+    private weak var camera: CameraManager?
+
+    // MARK: - Layers
+    private let previewLayer = AVCaptureVideoPreviewLayer()
+    private let dotLayer = DotTrackingOverlayLayer()
+    private let velocityLayer = VelocityOverlayLayer()
+    private let poseLayer = PoseOverlayLayer()
+    private let performanceHUD = PerformanceHUDLayer()
+
+    // MARK: - Init
+    init(camera: CameraManager) {
+        self.camera = camera
         super.init(frame: .zero)
+
+        setupPreview()
+        setupOverlays()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // ----------------------------------------------------------
+    // MARK: - Setup Preview Layer
+    // ----------------------------------------------------------
+    private func setupPreview() {
+        guard let camera else { return }
+
+        previewLayer.session = camera.cameraSession
         previewLayer.videoGravity = .resizeAspect
         layer.addSublayer(previewLayer)
     }
 
-    required init?(coder: NSCoder) { fatalError() }
+    // ----------------------------------------------------------
+    // MARK: - Setup Overlay Layers
+    // ----------------------------------------------------------
+    private func setupOverlays() {
+        dotLayer.camera = camera
+        velocityLayer.camera = camera
+        poseLayer.camera = camera
 
+        dotLayer.contentsScale = UIScreen.main.scale
+        velocityLayer.contentsScale = UIScreen.main.scale
+        poseLayer.contentsScale = UIScreen.main.scale
+        performanceHUD.contentsScale = UIScreen.main.scale
+
+        layer.addSublayer(dotLayer)
+        layer.addSublayer(velocityLayer)
+        layer.addSublayer(poseLayer)
+
+        // 4th overlay (Model 1 pattern)
+        layer.addSublayer(performanceHUD)
+    }
+
+    // ----------------------------------------------------------
+    // MARK: - Layout
+    // ----------------------------------------------------------
     override func layoutSubviews() {
         super.layoutSubviews()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
         previewLayer.frame = bounds
+        dotLayer.frame = bounds
+        velocityLayer.frame = bounds
+        poseLayer.frame = bounds
+        performanceHUD.frame = bounds
+
+        CATransaction.commit()
     }
-}
 
-struct CameraPreviewView: UIViewRepresentable {
+    // ----------------------------------------------------------
+    // MARK: - Redraw Trigger
+    // ----------------------------------------------------------
+    func updateOverlays() {
+        guard let camera else { return }
+        guard let frame = camera.latestFrame else { return }
 
-    let session: AVCaptureSession
-    @EnvironmentObject private var camera: CameraManager
+        dotLayer.update(frame: frame)
+        velocityLayer.update(frame: frame)
+        poseLayer.update(frame: frame)
+        performanceHUD.update(with: frame)
+    }
+}@EnvironmentObject private var camera: CameraManager
 
     private let performanceHUD = PerformanceHUDLayer()
 
@@ -40,13 +124,33 @@ struct CameraPreviewView: UIViewRepresentable {
         performanceHUD.frame = view.bounds
         performanceHUD.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         view.layer.addSublayer(performanceHUD)
+=======
 
-        return view
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        previewLayer.frame = bounds
+        dotLayer.frame = bounds
+        velocityLayer.frame = bounds
+        poseLayer.frame = bounds
+>>>>>>> origin/main
+
+        CATransaction.commit()
     }
 
+<<<<<<<+main
     func updateUIView(_ uiView: PreviewView, context: Context) {
         if let frame = camera.latestFrame {
             performanceHUD.update(with: frame)
         }
+=======
+    // ----------------------------------------------------------
+    // MARK: - Redraw Trigger
+    // ----------------------------------------------------------
+    func updateOverlays() {
+        dotLayer.setNeedsDisplay()
+        velocityLayer.setNeedsDisplay()
+        poseLayer.setNeedsDisplay()
+>>>>>>> origin/main
     }
 }

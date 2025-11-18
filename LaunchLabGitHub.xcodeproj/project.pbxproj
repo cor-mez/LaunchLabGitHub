@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		05BE35F32ECBB078000AB2AF /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 05BE35F22ECBB06D000AB2AF /* .gitignore */; };
+		05BE363E2ECBFFD7000AB2AF /* opencv2.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 05BE363D2ECBFFD7000AB2AF /* opencv2.framework */; };
 		05F8339C2ECAFA320053B9D5 /* LaunchLab.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */; };
 /* End PBXBuildFile section */
 
@@ -30,9 +31,10 @@
 
 /* Begin PBXFileReference section */
 		05BE35F22ECBB06D000AB2AF /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
-		05F833272ECAF77B0053B9D5 /* LaunchLabGitHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LaunchLabGitHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		05F833382ECAF77D0053B9D5 /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		05F833422ECAF77D0053B9D5 /* LaunchLabGitHubUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		05BE363D2ECBFFD7000AB2AF /* opencv2.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = opencv2.framework; sourceTree = "<group>"; };
+		05BE363F2ECC003B000AB2AF /* LaunchLabGitHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = LaunchLabGitHub.app; path = /Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHub.app; sourceTree = "<absolute>"; };
+		05BE36402ECC003B000AB2AF /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = LaunchLabGitHubTests.xctest; path = /Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHub.app/Contents/PlugIns/LaunchLabGitHubTests.xctest; sourceTree = "<absolute>"; };
+		05BE36412ECC003B000AB2AF /* LaunchLabGitHubUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = LaunchLabGitHubUITests.xctest; path = "/Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHubUITests-Runner.app/Contents/PlugIns/LaunchLabGitHubUITests.xctest"; sourceTree = "<absolute>"; };
 		05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LaunchLab.xcconfig; sourceTree = "<group>"; };
 		05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LaunchLabGithub.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -55,6 +57,10 @@
 		};
 		05F833722ECAF8450053B9D5 /* Vision */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+				Cpp/EPnP.mm = sourcecode.cpp.objcpp;
+				Cpp/OpenCVBridge.mm = sourcecode.cpp.cpp;
+			};
 			path = Vision;
 			sourceTree = "<group>";
 		};
@@ -70,6 +76,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				05BE363E2ECBFFD7000AB2AF /* opencv2.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -96,7 +103,6 @@
 				05BE35F22ECBB06D000AB2AF /* .gitignore */,
 				05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */,
 				05F8339A2ECAF93E0053B9D5 /* Frameworks */,
-				05F833282ECAF77B0053B9D5 /* Products */,
 				05F833592ECAF8450053B9D5 /* App */,
 				05F833642ECAF8450053B9D5 /* Engine */,
 				05F833692ECAF8450053B9D5 /* Overlays */,
@@ -106,19 +112,10 @@
 			);
 			sourceTree = "<group>";
 		};
-		05F833282ECAF77B0053B9D5 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				05F833272ECAF77B0053B9D5 /* LaunchLabGitHub.app */,
-				05F833382ECAF77D0053B9D5 /* LaunchLabGitHubTests.xctest */,
-				05F833422ECAF77D0053B9D5 /* LaunchLabGitHubUITests.xctest */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 		05F8339A2ECAF93E0053B9D5 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				05BE363D2ECBFFD7000AB2AF /* opencv2.framework */,
 			);
 			path = Frameworks;
 			sourceTree = "<group>";
@@ -149,7 +146,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHub;
-			productReference = 05F833272ECAF77B0053B9D5 /* LaunchLabGitHub.app */;
+			productReference = 05BE363F2ECC003B000AB2AF /* LaunchLabGitHub.app */;
 			productType = "com.apple.product-type.application";
 		};
 		05F833372ECAF77D0053B9D5 /* LaunchLabGitHubTests */ = {
@@ -169,7 +166,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHubTests;
-			productReference = 05F833382ECAF77D0053B9D5 /* LaunchLabGitHubTests.xctest */;
+			productReference = 05BE36402ECC003B000AB2AF /* LaunchLabGitHubTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		05F833412ECAF77D0053B9D5 /* LaunchLabGitHubUITests */ = {
@@ -189,7 +186,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHubUITests;
-			productReference = 05F833422ECAF77D0053B9D5 /* LaunchLabGitHubUITests.xctest */;
+			productReference = 05BE36412ECC003B000AB2AF /* LaunchLabGitHubUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -225,7 +222,7 @@
 			mainGroup = 05F8331E2ECAF77B0053B9D5;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 05F833282ECAF77B0053B9D5 /* Products */;
+			productRefGroup = 05F8331E2ECAF77B0053B9D5;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -340,6 +337,7 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				FRAMEWORK_SEARCH_PATHS = "$(PROJECT_DIR)/Frameworks";
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -354,11 +352,13 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Frameworks/opencv2.framework/Headers/";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OBJC_BRIDGING_HEADER = "LaunchLabGitHub/Vision/Cpp/LaunchLabGitHub-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -403,6 +403,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				FRAMEWORK_SEARCH_PATHS = "$(PROJECT_DIR)/Frameworks";
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -411,10 +412,12 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Frameworks/opencv2.framework/Headers/";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OBJC_BRIDGING_HEADER = "LaunchLabGitHub/Vision/Cpp/LaunchLabGitHub-Bridging-Header.h";
 			};
 			name = Release;
 		};
@@ -432,7 +435,10 @@
 				DEVELOPMENT_TEAM = NKNPC9JY55;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				FRAMEWORK_SEARCH_PATHS = "$(PROJECT_DIR)/Vision/Cpp";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vision/Cpp",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = "C++17";
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
@@ -484,7 +490,10 @@
 				DEVELOPMENT_TEAM = NKNPC9JY55;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				FRAMEWORK_SEARCH_PATHS = "$(PROJECT_DIR)/Vision/Cpp";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vision/Cpp",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = "C++17";
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
