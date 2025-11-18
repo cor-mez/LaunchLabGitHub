@@ -1,5 +1,5 @@
 //
-//  VisionDot.swift
+//  FrameProfiler.swift
 //  LaunchLabGitHub
 //
 //  Created by Cory Meza on 11/17/25.
