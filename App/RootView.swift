@@ -2,24 +2,23 @@ import SwiftUI
 import AVFoundation
 
 struct RootView: View {
-    @StateObject private var camera = CameraManager.shared
+
+    @EnvironmentObject private var camera: CameraManager
 
     var body: some View {
         Group {
             switch camera.authorizationStatus {
 
             case .authorized:
-                CameraPreviewView(
-                    session: camera.cameraSession,
-                    intrinsics: camera.intrinsics
-                )
-                .edgesIgnoringSafeArea(.all)
+                CameraPreviewView()
+                    .environmentObject(camera)
+                    .edgesIgnoringSafeArea(.all)
 
             case .notDetermined:
                 ProgressView("Requesting Camera Access…")
                     .task { await camera.checkAuth() }
 
-            default:
+            case .denied, .restricted:
                 VStack(spacing: 16) {
                     Text("Camera access is required to use LaunchLab.")
                         .font(.headline)
@@ -31,6 +30,9 @@ struct RootView: View {
                         }
                     }
                 }
+
+            @unknown default:
+                EmptyView()
             }
         }
         .onAppear {

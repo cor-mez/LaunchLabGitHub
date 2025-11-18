@@ -1,88 +1,74 @@
-// VisionPipeline.swift
-// Example integration of VelocityTracker (final stage: DotDetector → DotTracker → PoseSolver → VelocityTracker)
+//
+//  VisionPipeline.swift
+//  LaunchLab
+//
 
 import Foundation
 import CoreVideo
-import CoreGraphics
+import CoreMedia
+import QuartzCore
+import simd
 
-public final class VisionPipeline {
+final class VisionPipeline {
 
-    // Existing components
-    private let dotDetector = DotDetector()
-    private let dotTracker = DotTracker()
-    private let poseSolver = PoseSolver()
+    private let detector = DotDetector()
+    private let tracker = DotTracker()
+    private let lk = PyrLKRefiner()
+    private let velocity = VelocityTracker()
+    private let pose = PoseSolver()
 
-    // New component
-    private let velocityTracker = VelocityTracker()
+    private let profiler = FrameProfiler.shared
 
-    public init() {}
+    private var lastFrame: VisionFrameData?
 
-    /// Main entry point used by CameraManager.
-    ///
-    /// - Parameters:
-    ///   - pixelBuffer: Current frame buffer.
-    ///   - timestamp: Frame timestamp in seconds.
-    ///   - intrinsics: Camera intrinsics (dynamic or fallback).
-    ///
-    /// - Returns: VisionFrameData for overlays.
-    public func processFrame(
-        pixelBuffer: CVPixelBuffer,
-        timestamp: Double,
-        intrinsics: CameraIntrinsics
-    ) -> VisionFrameData {
+    func process(_ curr: VisionFrameData) -> VisionFrameData {
 
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let prev = lastFrame
+        let t_total = profiler.begin("total_pipeline")
 
-        // 1) Detect dots (stateless)
-        let detectedDots = dotDetector.detectDots(
-            in: pixelBuffer,
-            width: width,
-            height: height
+        // 1. DETECTOR
+        let t_det = profiler.begin("detector")
+        let detectedPoints = detector.detect(in: curr.pixelBuffer)
+        profiler.end("detector", t_det)
+
+        // 2. TRACKER
+        let t_trk = profiler.begin("tracker")
+        let tracked = tracker.track(prev: prev?.dots ?? [], currPoints: detectedPoints)
+        profiler.end("tracker", t_trk)
+
+        // 3. LK REFINER (wrapped in GPU timing)
+        let t_lk = profiler.begin("lk_refiner")
+        let refined = prev != nil
+            ? lk.refine(prevFrame: prev!, currFrame: curr, tracked: tracked)
+            : tracked
+        profiler.end("lk_refiner", t_lk)
+
+        // 4. VELOCITY
+        let t_vel = profiler.begin("velocity")
+        let withVelocity = velocity.process(refined, timestamp: curr.timestamp)
+        profiler.end("velocity", t_vel)
+
+        // 5. POSE
+        let t_pose = profiler.begin("pose")
+        let imagePoints = withVelocity.map { SIMD2(Float($0.position.x), Float($0.position.y)) }
+        let poseOut = pose.solve(imagePoints: imagePoints, intrinsics: curr.intrinsics.matrix)
+        profiler.end("pose", t_pose)
+
+        profiler.end("total_pipeline", t_total)
+        profiler.nextFrame()
+
+        // Build next frame
+        let out = VisionFrameData(
+            pixelBuffer: curr.pixelBuffer,
+            width: curr.width,
+            height: curr.height,
+            timestamp: curr.timestamp,
+            intrinsics: curr.intrinsics,
+            pose: poseOut,
+            dots: withVelocity
         )
 
-        // 2) Track / stabilize IDs (existing DotTracker behavior)
-        let trackedDots = dotTracker.trackDots(
-            detectedDots,
-            width: width,
-            height: height,
-            timestamp: timestamp
-        )
-
-        // 3) Solve pose from tracked dots
-        let imagePoints = trackedDots.map { CGPoint(x: $0.position.x, y: $0.position.y) }
-        let modelPoints = DotPattern.shared.modelPoints   // adjust if your pattern lives elsewhere
-
-        let pose = poseSolver.solvePose(
-            modelPoints: modelPoints,
-            imagePoints: imagePoints,
-            intrinsics: intrinsics
-        )
-
-        // 4) VelocityTracker: compute per-dot flow + predicted next position
-        let velocityDots = velocityTracker.process(
-            dots: trackedDots,
-            pixelBuffer: pixelBuffer,
-            timestamp: timestamp
-        )
-
-        // 5) Build frame data (Model 1: latestFrame used by overlays)
-        let frameData = VisionFrameData(
-            dots: velocityDots,
-            pose: pose,
-            width: width,
-            height: height,
-            timestamp: timestamp,
-            intrinsics: intrinsics
-        )
-
-        return frameData
-    }
-
-    /// Reset internal state when capture restarts or configuration changes.
-    public func reset() {
-        velocityTracker.reset()
-        dotTracker.reset()
-        // dotDetector and poseSolver remain stateless by design
+        lastFrame = out
+        return out
     }
 }

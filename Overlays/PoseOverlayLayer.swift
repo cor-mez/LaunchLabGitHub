@@ -3,104 +3,49 @@
 //  LaunchLab
 //
 
-import Foundation
-import QuartzCore
-import CoreGraphics
-import simd
+import UIKit
 
 final class PoseOverlayLayer: CALayer {
 
-    private var latestFrame: VisionFrameData?
-    private var latestIntrinsics: CameraIntrinsics?
+    weak var camera: CameraManager?
 
-    // ---------------------------------------------------------
-    // MARK: - Update
-    // ---------------------------------------------------------
-    func update(frame newFrame: VisionFrameData?, intrinsics: CameraIntrinsics?) {
-        self.latestFrame = newFrame
-        self.latestIntrinsics = intrinsics
-        setNeedsDisplay()
-    }
-
-    // ---------------------------------------------------------
-    // MARK: - Draw
-    // ---------------------------------------------------------
     override func draw(in ctx: CGContext) {
-        guard
-            let frame = latestFrame,
-            let pose = frame.pose,
-            let intr = latestIntrinsics
-        else { return }
+        guard let camera else { return }
 
-        let viewSize = bounds.size
+        // MainActor hop to read @Published latestFrame
+        let frame = MainActor.assumeIsolated {
+            camera.latestFrame
+        }
+        guard let frame else { return }
+        guard let pose = frame.pose else { return }
 
-        // -----------------------------------------------------
-        // Step 1: Project origin + axes in 2D buffer coordinates
-        // -----------------------------------------------------
-        let axes = VisionOverlaySupport.project3DAxis(
-            rotation: pose.rotation,
-            translation: pose.translation,
-            intrinsics: intr
+        // --- Projection: 3D Translation (T) → Pixel (u,v) ---
+        let X = pose.T.x
+        let Y = pose.T.y
+        let Z = pose.T.z
+
+        let fx = frame.intrinsics.fx
+        let fy = frame.intrinsics.fy
+        let cx = frame.intrinsics.cx
+        let cy = frame.intrinsics.cy
+
+        let origin = CGPoint(
+            x: CGFloat(fx * X / Z + cx),
+            y: CGFloat(fy * Y / Z + cy)
         )
 
-        // axes.origin, axes.x, axes.y, axes.z are in buffer-space (pixels)
+        ctx.setLineWidth(2)
 
-        // -----------------------------------------------------
-        // Step 2: Map buffer-space to view-space
-        // -----------------------------------------------------
-        let o = VisionOverlaySupport.mapPointFromBufferToView(
-            point: axes.origin,
-            bufferWidth: frame.width,
-            bufferHeight: frame.height,
-            viewSize: viewSize
-        )
+        // X axis (red)
+        ctx.setStrokeColor(UIColor.red.cgColor)
+        ctx.move(to: origin)
+        ctx.addLine(to: CGPoint(x: origin.x + 40, y: origin.y))
+        ctx.strokePath()
 
-        let xEnd = VisionOverlaySupport.mapPointFromBufferToView(
-            point: axes.x,
-            bufferWidth: frame.width,
-            bufferHeight: frame.height,
-            viewSize: viewSize
-        )
-
-        let yEnd = VisionOverlaySupport.mapPointFromBufferToView(
-            point: axes.y,
-            bufferWidth: frame.width,
-            bufferHeight: frame.height,
-            viewSize: viewSize
-        )
-
-        let zEnd = VisionOverlaySupport.mapPointFromBufferToView(
-            point: axes.z,
-            bufferWidth: frame.width,
-            bufferHeight: frame.height,
-            viewSize: viewSize
-        )
-
-        // -----------------------------------------------------
-        // Step 3: Draw axes using updated API
-        // -----------------------------------------------------
-        VisionOverlaySupport.drawLine(
-            context: ctx,
-            from: o,
-            to: xEnd,
-            width: 3,
-            color: CGColor(red: 1, green: 0, blue: 0, alpha: 1)
-        )
-
-        VisionOverlaySupport.drawLine(
-            context: ctx,
-            from: o,
-            to: yEnd,
-            width: 3,
-            color: CGColor(red: 0, green: 1, blue: 0, alpha: 1)
-        )
-
-        VisionOverlaySupport.drawLine(
-            context: ctx,
-            from: o,
-            to: zEnd,
-            width: 3,
-            color: CGColor(red: 0, green: 0, blue: 1, alpha: 1)
-        )
+        // Y axis (green)
+        ctx.setStrokeColor(UIColor.green.cgColor)
+        ctx.move(to: origin)
+        ctx.addLine(to: CGPoint(x: origin.x, y: origin.y + 40))
+        ctx.strokePath()
     }
 }

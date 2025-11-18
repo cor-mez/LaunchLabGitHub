@@ -1,8 +1,3 @@
-//
-//  CameraIntrinsics.swift
-//  LaunchLab
-//
-
 import Foundation
 import simd
 
@@ -37,7 +32,6 @@ public extension CameraIntrinsics {
     )
 
     /// Simple fallback intrinsics for legacy portrait 720×1280.
-    /// (Use only for debugging; real app uses metadata intrinsics.)
     static let iPhone240_720x1280 = CameraIntrinsics(
         fx: 720 * 0.95,
         fy: 720 * 0.95,
@@ -46,4 +40,20 @@ public extension CameraIntrinsics {
         width: 720,
         height: 1280
     )
+
+    /// 🔵 Restored default intrinsics for arbitrary width × height.
+    static func makeDefault(width: Int, height: Int) -> CameraIntrinsics {
+        let w = Float(width)
+        let h = Float(height)
+        let f = 0.9 * w
+
+        return CameraIntrinsics(
+            fx: f,
+            fy: f,
+            cx: w * 0.5,
+            cy: h * 0.5,
+            width: width,
+            height: height
+        )
+    }
 }

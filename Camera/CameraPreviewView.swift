@@ -7,102 +7,98 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-// -------------------------------------------------------------
-// MARK: - UIView (Camera + Overlays)
-// -------------------------------------------------------------
-final class CameraPreviewUIView: UIView {
+struct CameraPreviewView: UIViewRepresentable {
 
-    // AV capture preview
-    private let previewLayer = AVCaptureVideoPreviewLayer()
+    @EnvironmentObject var camera: CameraManager
 
-    // Overlays
-    private let dotLayer = DotTrackingOverlayLayer()
-    private let reprojLayer = ReprojectionOverlayLayer()
-    private let poseLayer = PoseOverlayLayer()
-
-    // Intrinsics provided externally
-    private var intrinsics: CameraIntrinsics?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-
-        backgroundColor = .black
-
-        // ----------------------------
-        // Preview layer setup
-        // ----------------------------
-        previewLayer.videoGravity = .resizeAspect
-        layer.addSublayer(previewLayer)
-
-        // ----------------------------
-        // Overlays
-        // ----------------------------
-        layer.addSublayer(dotLayer)
-        layer.addSublayer(reprojLayer)
-        layer.addSublayer(poseLayer)
-
-        // ----------------------------
-        // Bind to vision pipeline
-        // ----------------------------
-        VisionPipeline.shared.onFrame = { [weak self] frameData in
-            guard let self = self else { return }
-
-            let intr = self.intrinsics
-
-            // Update overlays with model-1 pattern
-            self.dotLayer.update(frame: frameData)
-            self.reprojLayer.update(frame: frameData, intrinsics: intr)
-            self.poseLayer.update(frame: frameData, intrinsics: intr)
-        }
+    func makeUIView(context: Context) -> CameraPreviewContainer {
+        let container = CameraPreviewContainer(camera: camera)
+        return container
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // External setter — CameraManager should call this once intrinsics are known
-    func setIntrinsics(_ intr: CameraIntrinsics) {
-        self.intrinsics = intr
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-
-        previewLayer.frame = bounds
-        dotLayer.frame = bounds
-        reprojLayer.frame = bounds
-        poseLayer.frame = bounds
-    }
-
-    // Provide camera session from outside
-    func attachSession(_ session: AVCaptureSession) {
-        previewLayer.session = session
+    func updateUIView(_ uiView: CameraPreviewContainer, context: Context) {
+        uiView.updateOverlays()
     }
 }
 
 
-// -------------------------------------------------------------
-// MARK: - SwiftUI Wrapper
-// -------------------------------------------------------------
-struct CameraPreviewView: UIViewRepresentable {
+// ============================================================
+// MARK: - UIKit Container View
+// ============================================================
 
-    let session: AVCaptureSession
-    let intrinsics: CameraIntrinsics?
+final class CameraPreviewContainer: UIView {
 
-    func makeUIView(context: Context) -> CameraPreviewUIView {
-        let view = CameraPreviewUIView()
-        view.attachSession(session)
+    // MARK: - External Owner
+    private weak var camera: CameraManager?
 
-        if let intr = intrinsics {
-            view.setIntrinsics(intr)
-        }
+    // MARK: - Layers
+    private let previewLayer = AVCaptureVideoPreviewLayer()
+    private let dotLayer = DotOverlayLayer()
+    private let velocityLayer = VelocityOverlayLayer()
+    private let poseLayer = PoseOverlayLayer()
 
-        return view
+    // MARK: - Init
+    init(camera: CameraManager) {
+        self.camera = camera
+        super.init(frame: .zero)
+
+        setupPreview()
+        setupOverlays()
     }
 
-    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
-        if let intr = intrinsics {
-            uiView.setIntrinsics(intr)
-        }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // ----------------------------------------------------------
+    // MARK: - Setup Preview Layer
+    // ----------------------------------------------------------
+    private func setupPreview() {
+        guard let camera else { return }
+
+        previewLayer.session = camera.cameraSession
+        previewLayer.videoGravity = .resizeAspect
+        layer.addSublayer(previewLayer)
+    }
+
+    // ----------------------------------------------------------
+    // MARK: - Setup Overlay Layers
+    // ----------------------------------------------------------
+    private func setupOverlays() {
+        dotLayer.camera = camera
+        velocityLayer.camera = camera
+        poseLayer.camera = camera
+
+        dotLayer.contentsScale = UIScreen.main.scale
+        velocityLayer.contentsScale = UIScreen.main.scale
+        poseLayer.contentsScale = UIScreen.main.scale
+
+        layer.addSublayer(dotLayer)
+        layer.addSublayer(velocityLayer)
+        layer.addSublayer(poseLayer)
+    }
+
+    // ----------------------------------------------------------
+    // MARK: - Layout
+    // ----------------------------------------------------------
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        previewLayer.frame = bounds
+        dotLayer.frame = bounds
+        velocityLayer.frame = bounds
+        poseLayer.frame = bounds
+
+        CATransaction.commit()
+    }
+
+    // ----------------------------------------------------------
+    // MARK: - Redraw Trigger
+    // ----------------------------------------------------------
+    func updateOverlays() {
+        dotLayer.setNeedsDisplay()
+        velocityLayer.setNeedsDisplay()
+        poseLayer.setNeedsDisplay()
     }
 }

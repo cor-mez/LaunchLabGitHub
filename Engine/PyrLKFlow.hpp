@@ -1,13 +1,17 @@
-//
-//  PyrLKFlow.hpp
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 11/17/25.
-//
+#pragma once
 
-#ifndef PyrLKFlow_hpp
-#define PyrLKFlow_hpp
+// Use umbrella include for OpenCV 4.x on macOS/iOS
+#include <opencv2/opencv.hpp>
 
-#include <stdio.h>
+namespace launchlab {
 
-#endif /* PyrLKFlow_hpp */
+void computePyrLK(
+    const cv::Mat& prevGray,
+    const cv::Mat& currGray,
+    const std::vector<cv::Point2f>& prevPoints,
+    std::vector<cv::Point2f>& outPoints,
+    std::vector<unsigned char>& status,
+    std::vector<float>& error
+);
+
+} // namespace launchlab
