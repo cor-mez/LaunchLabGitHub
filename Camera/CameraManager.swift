@@ -11,7 +11,7 @@ import UIKit
 
 @MainActor
 public final class CameraManager: NSObject, ObservableObject {
-
+private let hudLayer = HUDOverlayLayer()
     // ---------------------------------------------------------
     // MARK: - Pipeline Ownership (NO SINGLETONS)
     // ---------------------------------------------------------
@@ -59,8 +59,9 @@ public final class CameraManager: NSObject, ObservableObject {
     // MARK: - Init
     // ---------------------------------------------------------
     public override init() {
-        super.init()
-    }
+    super.init()
+    hudLayer.camera = self
+}
 
     // ---------------------------------------------------------
     // MARK: - Start Session
