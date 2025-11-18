@@ -123,6 +123,11 @@ private let hudLayer = HUDOverlayLayer()
         let layer = AVCaptureVideoPreviewLayer(session: session)
         layer.videoGravity = .resizeAspect
         return layer
+        
+        if let view = context.coordinator.view {
+    hudLayer.frame = view.bounds
+    view.layer.addSublayer(hudLayer)
+}
     }
 
     // ---------------------------------------------------------
@@ -187,7 +192,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             // Correct v4 API
             let processed = self.pipeline.process(frame)
             // Publish for overlays
-            self.latestFrame = processed
+            self.hudLayer.setNeedsDisplay()
         }
 
         // Update intrinsics separately
