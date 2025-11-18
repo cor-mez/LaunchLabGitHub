@@ -7,102 +7,46 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-// -------------------------------------------------------------
-// MARK: - UIView (Camera + Overlays)
-// -------------------------------------------------------------
-final class CameraPreviewUIView: UIView {
+final class PreviewView: UIView {
 
-    // AV capture preview
-    private let previewLayer = AVCaptureVideoPreviewLayer()
+    let previewLayer: AVCaptureVideoPreviewLayer
 
-    // Overlays
-    private let dotLayer = DotTrackingOverlayLayer()
-    private let reprojLayer = ReprojectionOverlayLayer()
-    private let poseLayer = PoseOverlayLayer()
-
-    // Intrinsics provided externally
-    private var intrinsics: CameraIntrinsics?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-
-        backgroundColor = .black
-
-        // ----------------------------
-        // Preview layer setup
-        // ----------------------------
+    init(session: AVCaptureSession) {
+        self.previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        super.init(frame: .zero)
         previewLayer.videoGravity = .resizeAspect
         layer.addSublayer(previewLayer)
-
-        // ----------------------------
-        // Overlays
-        // ----------------------------
-        layer.addSublayer(dotLayer)
-        layer.addSublayer(reprojLayer)
-        layer.addSublayer(poseLayer)
-
-        // ----------------------------
-        // Bind to vision pipeline
-        // ----------------------------
-        VisionPipeline.shared.onFrame = { [weak self] frameData in
-            guard let self = self else { return }
-
-            let intr = self.intrinsics
-
-            // Update overlays with model-1 pattern
-            self.dotLayer.update(frame: frameData)
-            self.reprojLayer.update(frame: frameData, intrinsics: intr)
-            self.poseLayer.update(frame: frameData, intrinsics: intr)
-        }
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // External setter — CameraManager should call this once intrinsics are known
-    func setIntrinsics(_ intr: CameraIntrinsics) {
-        self.intrinsics = intr
-    }
+    required init?(coder: NSCoder) { fatalError() }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-
         previewLayer.frame = bounds
-        dotLayer.frame = bounds
-        reprojLayer.frame = bounds
-        poseLayer.frame = bounds
-    }
-
-    // Provide camera session from outside
-    func attachSession(_ session: AVCaptureSession) {
-        previewLayer.session = session
     }
 }
 
-
-// -------------------------------------------------------------
-// MARK: - SwiftUI Wrapper
-// -------------------------------------------------------------
 struct CameraPreviewView: UIViewRepresentable {
 
     let session: AVCaptureSession
-    let intrinsics: CameraIntrinsics?
+    @EnvironmentObject private var camera: CameraManager
 
-    func makeUIView(context: Context) -> CameraPreviewUIView {
-        let view = CameraPreviewUIView()
-        view.attachSession(session)
+    private let performanceHUD = PerformanceHUDLayer()
 
-        if let intr = intrinsics {
-            view.setIntrinsics(intr)
-        }
+    func makeUIView(context: Context) -> PreviewView {
+        let view = PreviewView(session: session)
+
+        // -- Attach as 4th overlay (Model 1 pattern) --
+        performanceHUD.frame = view.bounds
+        performanceHUD.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        view.layer.addSublayer(performanceHUD)
 
         return view
     }
 
-    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
-        if let intr = intrinsics {
-            uiView.setIntrinsics(intr)
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        if let frame = camera.latestFrame {
+            performanceHUD.update(with: frame)
         }
     }
 }
