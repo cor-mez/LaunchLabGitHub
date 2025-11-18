@@ -3,35 +3,22 @@
 //  LaunchLab
 //
 
-import UIKit
+import Foundation
+import QuartzCore
 import CoreGraphics
+import UIKit
 import simd
 
 final class PerformanceHUDLayer: CALayer {
 
-    // Latest frame from CameraManager
-    weak var latestFrame: VisionFrameData?
+    private var latestFrame: VisionFrameData?
 
-    // FPS estimation
-    private var lastTimestamp: CFTimeInterval = 0
-    private var fpsSamples: [Double] = Array(repeating: 0, count: 30)
-    private var fpsIndex = 0
-    private var fpsFilled = false
-
-    override init() {
-        super.init()
-        contentsScale = UIScreen.main.scale
-        isOpaque = false
-        needsDisplayOnBoundsChange = true
-        drawsAsynchronously = false
-    }
-
-    override init(layer: Any) {
-        super.init(layer: layer)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) not implemented")
+    // ---------------------------------------------------------
+    // MARK: - Public Update
+    // ---------------------------------------------------------
+    public func update(with frame: VisionFrameData) {
+        self.latestFrame = frame
+        setNeedsDisplay()
     }
 
     // ---------------------------------------------------------
@@ -40,71 +27,83 @@ final class PerformanceHUDLayer: CALayer {
     override func draw(in ctx: CGContext) {
         guard let frame = latestFrame else { return }
 
-        // --- FPS tracking ---
-        let now = frame.timestamp
-        if lastTimestamp > 0 {
-            let dt = now - lastTimestamp
-            if dt > 0 {
-                let fps = 1.0 / dt
-                fpsSamples[fpsIndex] = fps
-                fpsIndex = (fpsIndex + 1) % 30
-                if fpsIndex == 0 { fpsFilled = true }
-            }
+        let w = bounds.width
+        let origin = CGPoint(x: 8, y: 8)
+        var y: CGFloat = origin.y
+
+        // Common text style
+        let font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        let color = UIColor.white
+
+        func draw(_ text: String) {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color
+            ]
+            text.draw(at: CGPoint(x: origin.x, y: y), withAttributes: attrs)
+            y += 16
         }
-        lastTimestamp = now
 
-        let fpsCount = fpsFilled ? 30 : fpsIndex
-        let fpsAvg = fpsCount > 0 ? fpsSamples.prefix(fpsCount).reduce(0,+)/Double(fpsCount) : 0
+        // ---------------------------------------------------------
+        // 1. Frame Timing
+        // ---------------------------------------------------------
+        draw("FPS: \(FrameProfiler.shared.currentFPS)")
+        draw("CPU total: \(String(format: "%.2f", FrameProfiler.shared.avg(for: "total_pipeline"))) ms")
 
-        let prof = FrameProfiler.shared.visualMetrics()
-        let dotCount = frame.dots.count
-        let poseRMS = frame.pose?.reprojectionError ?? 0
+        // Optional: show detector / tracker / LK times
+        draw("Detector: \(String(format: \"%.2f\", FrameProfiler.shared.avg(for: \"detector\"))) ms")
+        draw("Tracker:  \(String(format: \"%.2f\", FrameProfiler.shared.avg(for: \"tracker\"))) ms")
+        draw("LK:       \(String(format: \"%.2f\", FrameProfiler.shared.avg(for: \"lk_refiner\"))) ms")
+        draw("Velocity: \(String(format: \"%.2f\", FrameProfiler.shared.avg(for: \"velocity\"))) ms")
+        draw("Pose:     \(String(format: \"%.2f\", FrameProfiler.shared.avg(for: \"pose\"))) ms")
 
-        // Intrinsics debug
-        let i = frame.intrinsics
-        let intrinsicsText = "fx:\(Int(i.fx)) fy:\(Int(i.fy)) cx:\(Int(i.cx)) cy:\(Int(i.cy))"
+        y += 8
 
-        let text =
-        """
-        FPS: \(String(format:"%.1f", fpsAvg))
-        DOTS: \(dotCount)
-        POSE RMS: \(String(format:"%.2f", poseRMS))
+        // ---------------------------------------------------------
+        // 2. RS-PnP Angular Velocity Readout
+        // ---------------------------------------------------------
+        if let rs = frame.rspnp {
 
-        CPU (avg ms):
-          detect:   \(prof.detector)
-          track:    \(prof.tracker)
-          lk:       \(prof.lk)
-          velocity: \(prof.velocity)
-          pose:     \(prof.pose)
-          total:    \(prof.total)
+            // Angular velocity vector
+            let wx = rs.w.x
+            let wy = rs.w.y
+            let wz = rs.w.z
 
-        GPU (LK):
-          last: \(prof.gpuLast) ms
-          avg : \(prof.gpuAvg) ms
+            // Magnitude = rad/s
+            let omegaMag = sqrt(wx*wx + wy*wy + wz*wz)
 
-        INTRINSICS:
-          \(intrinsicsText)
-        """
+            // Convert rad/s → RPM
+            let rpm = omegaMag * 60 / (2 * .pi)
 
-        // Background panel
-        ctx.setFillColor(UIColor(white: 0, alpha: 0.55).cgColor)
-        ctx.fill(CGRect(x: 8, y: 8, width: 260, height: 260))
+            // Spin axis unit vector
+            var spinAxis = SIMD3<Float>(0,0,0)
+            if omegaMag > 1e-6 {
+                spinAxis = normalize(rs.w)
+            }
 
-        // Text drawing
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 1
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: UIColor.green,
-            .paragraphStyle: paragraph
-        ]
+            draw("RS-PnP v1.5")
+            draw("ω: [\(fmt(wx)), \(fmt(wy)), \(fmt(wz))] rad/s")
+            draw("Spin Axis: [\(fmt(spinAxis.x)), \(fmt(spinAxis.y)), \(fmt(spinAxis.z))]")
+            draw("RPM: \(fmt(rpm))")
+            draw("RS Residual: \(fmt(rs.residual))")
+        } else {
+            draw("RS-PnP: (no solution)")
+        }
 
-        text.draw(in: CGRect(x: 16, y: 16, width: 240, height: 240), withAttributes: attrs)
+        y += 8
+
+        // ---------------------------------------------------------
+        // 3. Intrinsics Debug
+        // ---------------------------------------------------------
+        let fx = frame.intrinsics.fx
+        let fy = frame.intrinsics.fy
+        draw("fx: \(fmt(fx))   fy: \(fmt(fy))")
     }
+}
 
-    // Must be called every frame
-    func update(with frame: VisionFrameData) {
-        self.latestFrame = frame
-        setNeedsDisplay()
-    }
+// -------------------------------------------------------------
+// MARK: - Helpers
+// -------------------------------------------------------------
+private func fmt(_ v: Float) -> String {
+    return String(format: "%.3f", v)
 }

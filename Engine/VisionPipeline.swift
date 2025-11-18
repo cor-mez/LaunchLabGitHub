@@ -11,22 +11,36 @@ import simd
 
 final class VisionPipeline {
 
+    // ---------------------------------------------------------
+    // MARK: - Submodules
+    // ---------------------------------------------------------
     private let detector = DotDetector()
     private let tracker = DotTracker()
     private let lk = PyrLKRefiner()
     private let velocity = VelocityTracker()
     private let pose = PoseSolver()
+
     private let profiler = FrameProfiler.shared
 
-    private let rspnp = RSPnPSolver()
+    private let rsLine = RSLineIndex()
     private let rsTiming = RSTimingModel()
     private let rsBV = RSBearingVectors()
-    private let rsLine = RSLineIndex()
     private let rsCorr = RSGeometricCorrector()
+    private let rsPnP = RSPnPSolver()
+
+    private let spinSolver = SpinAxisSolver()
 
     private let dotModel = DotModel()
 
-    func process(prev: VisionFrameData?, curr: VisionFrameData) -> VisionFrameData {
+    // ---------------------------------------------------------
+    // MARK: - State
+    // ---------------------------------------------------------
+    private var prevFrame: VisionFrameData?
+
+    // ---------------------------------------------------------
+    // MARK: - Main Entry
+    // ---------------------------------------------------------
+    func process(_ curr: VisionFrameData) -> VisionFrameData {
 
         let t_total = profiler.begin("total_pipeline")
 
@@ -37,14 +51,14 @@ final class VisionPipeline {
 
         // 2. TRACKER
         let t_trk = profiler.begin("tracker")
-        let prevDots = prev?.dots ?? []
+        let prevDots = prevFrame?.dots ?? []
         let tracked = tracker.track(prev: prevDots, currPoints: detectedPoints)
         profiler.end("tracker", t_trk)
 
         // 3. PYR LK
         let t_lk = profiler.begin("lk_refiner")
-        let refined = prev != nil
-            ? lk.refine(prevFrame: prev!, currFrame: curr, tracked: tracked)
+        let refined = prevFrame != nil
+            ? lk.refine(prevFrame: prevFrame!, currFrame: curr, tracked: tracked)
             : tracked
         profiler.end("lk_refiner", t_lk)
 
@@ -53,7 +67,7 @@ final class VisionPipeline {
         let withVel = velocity.process(refined, timestamp: curr.timestamp)
         profiler.end("velocity", t_vel)
 
-        // 5. POSE SOLVER
+        // 5. BASE POSE
         let t_pose = profiler.begin("pose")
         let imagePoints = withVel.map {
             SIMD2<Float>(Float($0.position.x), Float($0.position.y))
@@ -64,17 +78,11 @@ final class VisionPipeline {
         )
         profiler.end("pose", t_pose)
 
-        // 6. RS LINE INDICES
-        let lineIndex = rsLine.compute(
-            frame: curr,
-            imagePoints: imagePoints
-        )
+        // 6. RS LINE INDEX
+        let lineIndex = rsLine.compute(frame: curr, imagePoints: imagePoints)
 
         // 7. RS TIMING
-        let rsTimes = rsTiming.computeDotTimes(
-            frame: curr,
-            dotPositions: imagePoints
-        )
+        let rsTimes = rsTiming.computeDotTimes(frame: curr, dotPositions: imagePoints)
 
         // 8. RS BEARINGS
         let modelPoints = (0..<DotModel.count).map { dotModel.point(for: $0) }
@@ -85,33 +93,29 @@ final class VisionPipeline {
             intrinsics: curr.intrinsics.matrix
         )
 
-        // -----------------------------------------------------
-        // 9. RS GEOMETRIC CORRECTION (v1.5)
-        // -----------------------------------------------------
-        let baseRot = poseOut?.R.toQuaternion ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0,1,0))
-        let baseT   = poseOut?.T ?? SIMD3<Float>(0,0,0)
-        let v       = SIMD3<Float>(0,0,0) // translational velocity placeholder
-        let w       = SIMD3<Float>(0,0,0) // angular velocity placeholder
-        let ts0     = Float(curr.timestamp)
-
+        // 9. RS CORRECTION (v1.5)
+        let baseR = poseOut?.R ?? simd_float3x3(diagonal: SIMD3<Float>(1,1,1))
+        let baseT = poseOut?.T ?? SIMD3<Float>(0,0,0)
         let corrected = rsCorr.correct(
             bearings: bearings,
-            baseRotation: baseRot,
+            baseRotation: simd_quatf(baseR),
             translation: baseT,
-            velocity: v,
-            angularVelocity: w,
-            baseTimestamp: ts0
+            velocity: SIMD3<Float>(0,0,0),
+            angularVelocity: SIMD3<Float>(0,0,0),
+            baseTimestamp: Float(curr.timestamp)
         )
 
-        // 10. RS-PnP Stub
-        let rspnpResult = rspnp.solve(
-            frame: curr,
-            modelPoints: modelPoints,
-            imagePoints: imagePoints,
-            timestamps: rsTimes
+        // 10. RS-PnP v2 SOLVER
+        let rspnpResult = rsPnP.solve(
+            corrected: corrected,
+            intrinsics: curr.intrinsics.matrix,
+            modelPoints: modelPoints
         )
 
-        // 11. BUILD FRAME
+        // 11. SPIN SOLVER
+        let spinOut = spinSolver.solve(from: rspnpResult)
+
+        // 12. BUILD OUTPUT FRAME
         let out = VisionFrameData(
             pixelBuffer: curr.pixelBuffer,
             width: curr.width,
@@ -127,10 +131,12 @@ final class VisionPipeline {
         out.rsBearings = bearings
         out.rsCorrected = corrected
         out.rspnp = rspnpResult
+        out.spin = spinOut
 
         profiler.end("total_pipeline", t_total)
         profiler.nextFrame()
 
+        prevFrame = out
         return out
     }
 }

@@ -2,75 +2,104 @@
 //  RSGeometricCorrector.swift
 //  LaunchLab
 //
-//  RS-PnP v1.5 geometric correction:
-//  • Rotation correction using constant angular velocity
-//  • Translation drift is computed but not applied to rays
-//  • ΔT is passed through for RS-PnP v2
-//
 
 import Foundation
 import simd
 
+// ============================================================
+// MARK: - Corrected RS Point
+// ============================================================
+
 public struct RSCorrectedPoint {
     public let id: Int
     public let modelPoint: SIMD3<Float>
-    public let correctedBearing: SIMD3<Float>
-    public let deltaTranslation: SIMD3<Float>    // not applied yet
-    public let timestamp: Float
+    public let correctedBearing: SIMD3<Float>   // after linear RS correction
+    public let timestamp: Float                 // Δt relative to frame start
 }
+
+
+// ============================================================
+// MARK: - Linear RS Geometric Corrector (v1.5)
+// ============================================================
 
 public final class RSGeometricCorrector {
 
-    public init() {}
-
     // ---------------------------------------------------------
-    // Apply constant-velocity SE(3) model:
-    //
-    // R(t_i) = exp(ω̂ * (t_i - t0))
-    // T(t_i) = T0 + v * (t_i - t0)
-    //
-    // We apply ΔR only to the bearing vector.
-    // ΔT is passed through but NOT applied (v1.5).
+    // MARK: - Correct
     // ---------------------------------------------------------
+    //
+    // Applies:
+    //
+    //   Xc(t) ≈ R0ᵀ * model
+    //          + (ω × Xc) * Δt
+    //          + v * Δt
+    //
+    // Then converts Xc(t) → normalized corrected bearing.
+    //
     public func correct(
         bearings: [RSBearing],
-        baseRotation: simd_quatf,
-        translation: SIMD3<Float>,
-        velocity: SIMD3<Float>,
-        angularVelocity: SIMD3<Float>,
+        baseRotation R0: simd_quatf,
+        translation T0: SIMD3<Float>,
+        velocity v: SIMD3<Float>,
+        angularVelocity w: SIMD3<Float>,
         baseTimestamp: Float
     ) -> [RSCorrectedPoint] {
+
+        if bearings.isEmpty { return [] }
 
         var out: [RSCorrectedPoint] = []
         out.reserveCapacity(bearings.count)
 
+        let R0mat = R0.act // convert quaternion → rotation
+
         for b in bearings {
-            let dt = b.timestamp - baseTimestamp
 
-            // Rotation correction
-            let angle = length(angularVelocity * dt)
-            let axis: SIMD3<Float> =
-                angle > 0 ? normalize(angularVelocity) : SIMD3<Float>(0,1,0)
+            let id = b.id
+            let t = b.timestamp - baseTimestamp   // Δt for rolling shutter
 
-            let dR = simd_quatf(angle: angle, axis: axis)
-            let R_total = baseRotation * dR
+            // --------------------------------------------
+            // 1. Base camera-space 3D point
+            //     Xc0 = R0 * Xmodel + T0
+            // --------------------------------------------
+            let Xc0 = R0mat * b.modelPoint + T0
 
-            let corrected = normalize(R_total.act(b.bearing))
+            // --------------------------------------------
+            // 2. Linearized RS motion
+            // --------------------------------------------
+            // Angular term: ω × Xc0
+            let cross = simd_cross(w, Xc0)
 
-            // Translation drift calculated but not applied (v1.5)
-            let dT = velocity * dt
+            // Linear update:
+            //   Xc(t) = Xc0 + cross*t + v*t
+            let Xt = Xc0 + cross * t + v * t
 
+            // --------------------------------------------
+            // 3. Convert corrected 3D point to bearing
+            // --------------------------------------------
+            var ray = Xt
+            let invLen = 1.0 / simd_length(ray)
+            ray *= invLen
+
+            // --------------------------------------------
+            // 4. Append
+            // --------------------------------------------
             out.append(
                 RSCorrectedPoint(
-                    id: b.id,
+                    id: id,
                     modelPoint: b.modelPoint,
-                    correctedBearing: corrected,
-                    deltaTranslation: dT,
-                    timestamp: b.timestamp
+                    correctedBearing: ray,
+                    timestamp: t
                 )
             )
         }
 
         return out
+    }
+}
+
+private extension simd_quatf {
+    @inline(__always)
+    var act: simd_float3x3 {
+        return simd_float3x3(self)
     }
 }

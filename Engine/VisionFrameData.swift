@@ -18,15 +18,13 @@ final class VisionFrameData {
     public var pose: PoseSolver.Pose?
     public var dots: [VisionDot]
 
-    public var rspnp: RSPnPResult?
+    public var rsLineIndex: [Int] = []
     public var rsTimestamps: [Float] = []
     public var rsBearings: [RSBearing] = []
-    public var rsLineIndex: [Int] = []
-
-    // ---------------------------------------------------------
-    // NEW: RS geometric correction (v1.5)
-    // ---------------------------------------------------------
     public var rsCorrected: [RSCorrectedPoint] = []
+    public var rspnp: RSPnPResult?
+
+    public var spin: SpinResult?
 
     init(
         pixelBuffer: CVPixelBuffer,
