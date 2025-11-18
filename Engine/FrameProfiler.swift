@@ -40,9 +40,7 @@ final class FrameProfiler {
     }
 
     private func record(_ name: String, _ dt: Double) {
-        if entries[name] == nil {
-            entries[name] = Entry(name: name)
-        }
+        if entries[name] == nil { entries[name] = Entry(name: name) }
         var e = entries[name]!
         e.samples[e.index] = dt
         e.index = (e.index + 1) % 120
@@ -71,5 +69,43 @@ final class FrameProfiler {
         }
 
         print("-------------------------------------------")
+    }
+
+    // ---------------------------------------------------------
+    // MARK: - HUD Metrics
+    // ---------------------------------------------------------
+    struct VisualMetrics {
+        var detector: String
+        var tracker: String
+        var lk: String
+        var velocity: String
+        var pose: String
+        var total: String
+        var gpuLast: String
+        var gpuAvg: String
+    }
+
+    func visualMetrics() -> VisualMetrics {
+        func avg(_ name: String) -> String {
+            guard let e = entries[name] else { return "0.00" }
+            let count = e.filled ? 120 : e.index
+            guard count > 0 else { return "0.00" }
+            let avg = e.samples.prefix(count).reduce(0, +) / Double(count)
+            return String(format: "%.2f", avg)
+        }
+
+        let gLast = String(format: "%.2f", lastGPU?.lastDurationMS ?? 0)
+        let gAvg  = String(format: "%.2f", lastGPU?.avgDurationMS ?? 0)
+
+        return VisualMetrics(
+            detector: avg("detector"),
+            tracker: avg("tracker"),
+            lk: avg("lk_refiner"),
+            velocity: avg("velocity"),
+            pose: avg("pose"),
+            total: avg("total_pipeline"),
+            gpuLast: gLast,
+            gpuAvg: gAvg
+        )
     }
 }
