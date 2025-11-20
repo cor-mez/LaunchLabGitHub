@@ -11,23 +11,33 @@ import UIKit
 
 @MainActor
 public final class CameraManager: NSObject, ObservableObject {
-private let hudLayer = HUDOverlayLayer()
-    // ---------------------------------------------------------
-    // MARK: - Pipeline Ownership (NO SINGLETONS)
-    // ---------------------------------------------------------
+
+    // =========================================================
+    // MARK: - Rolling-Shutter Timing Model (v2)
+    // =========================================================
+    //
+    // Loads calibrated RS timing model if available,
+    // otherwise falls back to linear.
+    //
+    @Published public private(set) var rsTimingModel: RSTimingModelProtocol =
+        RSTimingModelFactory.make()
+
+    // =========================================================
+    // MARK: - Pipeline
+    // =========================================================
     let pipeline = VisionPipeline()
 
-    // ---------------------------------------------------------
-    // MARK: - Capture Properties
-    // ---------------------------------------------------------
+    // =========================================================
+    // MARK: - Capture
+    // =========================================================
     private let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
 
     public var cameraSession: AVCaptureSession { session }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // MARK: - Authorization
-    // ---------------------------------------------------------
+    // =========================================================
     @Published public private(set) var authorizationStatus: AVAuthorizationStatus = .notDetermined
 
     public func checkAuth() async {
@@ -45,27 +55,29 @@ private let hudLayer = HUDOverlayLayer()
         }
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // MARK: - Intrinsics
-    // ---------------------------------------------------------
+    // =========================================================
     @Published public private(set) var intrinsics = CameraIntrinsics.zero
 
-    // ---------------------------------------------------------
-    // MARK: - Latest Processed Frame (For Overlays)
-    // ---------------------------------------------------------
+    // =========================================================
+    // MARK: - Latest Frame (for overlays)
+    // =========================================================
     @Published private(set) var latestFrame: VisionFrameData?
 
-    // ---------------------------------------------------------
+    // =========================================================
     // MARK: - Init
-    // ---------------------------------------------------------
+    // =========================================================
     public override init() {
-    super.init()
-    hudLayer.camera = self
-}
+        super.init()
 
-    // ---------------------------------------------------------
-    // MARK: - Start Session
-    // ---------------------------------------------------------
+        // Load RS timing model at startup
+        self.rsTimingModel = RSTimingModelFactory.make()
+    }
+
+    // =========================================================
+    // MARK: - Start session
+    // =========================================================
     public func start() async {
         guard authorizationStatus == .authorized else { return }
 
@@ -87,8 +99,11 @@ private let hudLayer = HUDOverlayLayer()
             session.commitConfiguration()
             return
         }
-        if session.canAddInput(input) { session.addInput(input) }
+        if session.canAddInput(input) {
+            session.addInput(input)
+        }
 
+        // Video output
         videoOutput.setSampleBufferDelegate(
             self,
             queue: DispatchQueue(label: "cam.queue")
@@ -116,23 +131,18 @@ private let hudLayer = HUDOverlayLayer()
         session.stopRunning()
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // MARK: - Preview Layer
-    // ---------------------------------------------------------
+    // =========================================================
     public func makePreviewLayer() -> AVCaptureVideoPreviewLayer {
         let layer = AVCaptureVideoPreviewLayer(session: session)
         layer.videoGravity = .resizeAspect
         return layer
-        
-        if let view = context.coordinator.view {
-    hudLayer.frame = view.bounds
-    view.layer.addSublayer(hudLayer)
-}
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // MARK: - Intrinsics Extraction
-    // ---------------------------------------------------------
+    // =========================================================
     private func updateIntrinsics(from sampleBuffer: CMSampleBuffer) {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
 
@@ -159,10 +169,9 @@ private let hudLayer = HUDOverlayLayer()
     }
 }
 
-
-// ---------------------------------------------------------
+// ============================================================
 // MARK: - SampleBuffer Delegate
-// ---------------------------------------------------------
+// ============================================================
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
@@ -177,7 +186,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         let width  = CVPixelBufferGetWidth(pb)
         let height = CVPixelBufferGetHeight(pb)
 
-        // Hop to MainActor for VisionPipeline processing
+        // MainActor hop -- process vision pipeline
         Task { @MainActor in
             let frame = VisionFrameData(
                 pixelBuffer: pb,
@@ -189,13 +198,17 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                 dots: []
             )
 
-            // Correct v4 API
+            // Push calibrated timing model into pipeline
+            self.pipeline.rsTimingModel = self.rsTimingModel
+
+            // Process
             let processed = self.pipeline.process(frame)
+
             // Publish for overlays
-            self.hudLayer.setNeedsDisplay()
+            self.latestFrame = processed
         }
 
-        // Update intrinsics separately
+        // Update intrinsics (separate)
         Task { @MainActor [weak self] in
             self?.updateIntrinsics(from: sampleBuffer)
         }

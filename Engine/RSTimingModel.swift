@@ -6,35 +6,101 @@
 import Foundation
 import simd
 
-/// Computes per-dot rolling-shutter timestamps based on line index.
-/// This is a placeholder linear model until we run RS calibration.
-final class RSTimingModel {
+// ============================================================
+// MARK: - Protocol
+// ============================================================
 
-    /// Estimated full-frame readout duration (seconds).
-    /// iPhone 16 Pro @ 240 FPS ≈ 1/240 ≈ 4.17 ms exposure window.
-    /// Real calibration will replace this number.
-    private let readout: Float = 0.0039   // seconds
+public protocol RSTimingModelProtocol {
+    /// row: pixel row (0 … height-1)
+    /// height: image height
+    /// frameTimestamp: Double (seconds)
+    func timestampForRow(
+        _ row: Float,
+        height: Float,
+        frameTimestamp: Double
+    ) -> Float
+}
 
-    public func computeDotTimes(
-        frame: VisionFrameData,
-        dotPositions: [SIMD2<Float>]
-    ) -> [Float] {
+// ============================================================
+// MARK: - Linear Model (Fallback)
+// ============================================================
 
-        let h = Float(frame.height)
-        guard h > 1 else {
-            return Array(repeating: Float(frame.timestamp), count: dotPositions.count)
+public final class LinearRSTimingModel: RSTimingModelProtocol {
+
+    private let readout: Float   // seconds
+
+    public init(readout: Float = 0.0039) {
+        self.readout = readout
+    }
+
+    public func timestampForRow(
+        _ row: Float,
+        height: Float,
+        frameTimestamp: Double
+    ) -> Float {
+
+        guard height > 1 else {
+            return Float(frameTimestamp)
         }
 
-        var ts = [Float]()
-        ts.reserveCapacity(dotPositions.count)
+        let y = max(0, min(height - 1, row))
+        let s = y / (height - 1)       // normalized 0→1
+        let dt = s * readout
 
-        for p in dotPositions {
-            let y = max(0, min(h - 1, p.y))
-            let rowFrac = y / (h - 1)             // 0 → 1
-            let dt = rowFrac * readout            // linear RS model
-            ts.append(Float(frame.timestamp) + dt)
+        return Float(frameTimestamp) + dt
+    }
+}
+
+// ============================================================
+// MARK: - Calibrated RS Timing Model
+// ============================================================
+
+public final class CalibratedRSTimingModel: RSTimingModelProtocol {
+
+    private let model: RSTimingCalibratedModel
+    private let readout: Float    // seconds (e.g., 0.0038)
+
+    public init(model: RSTimingCalibratedModel) {
+        self.model = model
+        self.readout = model.readout
+    }
+
+    public func timestampForRow(
+        _ row: Float,
+        height: Float,
+        frameTimestamp: Double
+    ) -> Float {
+
+        guard height > 1 else {
+            return Float(frameTimestamp)
         }
 
-        return ts
+        // Normalize 0…1
+        let y = max(0, min(height - 1, row))
+        let s = y / (height - 1)             // normalized 0→1
+
+        // Evaluate calibrated curve(s)
+        // Curve is monotonic and outputs 0…1 timing fraction
+        let curveVal = Float(model.evaluate(s))
+
+        // Convert to seconds
+        let dt = curveVal * readout
+
+        return Float(frameTimestamp) + dt
+    }
+}
+
+// ============================================================
+// MARK: - RSTimingModel Factory
+// ============================================================
+
+public enum RSTimingModelFactory {
+
+    /// Loads model from disk, else linear fallback
+    public static func make() -> RSTimingModelProtocol {
+        if let loaded = RSTimingCalibratedModel.load() {
+            return CalibratedRSTimingModel(model: loaded)
+        }
+        return LinearRSTimingModel()
     }
 }

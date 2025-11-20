@@ -1,5 +1,6 @@
 //
 //  LaunchLabApp.swift
+//  LaunchLab
 //
 
 import SwiftUI
@@ -7,14 +8,32 @@ import SwiftUI
 @main
 struct LaunchLabApp: App {
 
-    @StateObject var camera = CameraManager()        // ❌ was CameraManager.shared
-    @StateObject var shot = ShotDetector.shared      // keep this if ShotDetector IS a singleton
+    @StateObject var camera = CameraManager()
+    @StateObject var shot = ShotDetector.shared
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(camera)
-                .environmentObject(shot)
+            NavigationView {
+                VStack(spacing: 24) {
+
+                    NavigationLink("LaunchLab Camera") {
+                        RootView()
+                            .environmentObject(camera)
+                            .environmentObject(shot)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    NavigationLink("RS Timing Calibration") {
+                        RSTimingCalibrationRootView()
+                            .environmentObject(camera)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+                }
+                .padding()
+                .navigationTitle("LaunchLab")
+            }
         }
     }
 }

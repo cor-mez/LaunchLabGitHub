@@ -9,132 +9,77 @@ import UIKit
 
 struct CameraPreviewView: UIViewRepresentable {
 
-    @EnvironmentObject var camera: CameraManager
+    let session: AVCaptureSession
+    let intrinsics: CameraIntrinsics
 
-    func makeUIView(context: Context) -> CameraPreviewContainer {
-        CameraPreviewContainer(camera: camera)
+    @EnvironmentObject private var camera: CameraManager
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
     }
 
-    func updateUIView(_ uiView: CameraPreviewContainer, context: Context) {
-        uiView.updateOverlays()
-    }
-}
+    // ============================================================
+    // MARK: - MAKE UI VIEW
+    // ============================================================
+    func makeUIView(context: Context) -> PreviewContainerView {
+        let view = PreviewContainerView()
 
-// ============================================================
-// MARK: - UIKit Container
-// ============================================================
-
-final class CameraPreviewContainer: UIView {
-
-    private weak var camera: CameraManager?
-
-    private let previewLayer = AVCaptureVideoPreviewLayer()
-    private let dotLayer = DotTrackingOverlayLayer()
-    private let velocityLayer = VelocityOverlayLayer()
-    private let kltDebugLayer = KLTDebugOverlayLayer()
-    private let poseLayer = PoseOverlayLayer()
-    private let rsTimingLayer = RSTimingOverlayLayer()
-    private let rsGeometryLayer = RSGeometryOverlayLayer()
-    private let spinAxisLayer = SpinAxisOverlayLayer()
-    private let rpeLayer = RPEOverlayLayer()
-    private let performanceHUD = PerformanceHUDLayer()
-
-    init(camera: CameraManager) {
-        self.camera = camera
-        super.init(frame: .zero)
-        setupPreview()
-        setupOverlays()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    // --------------------------------------------------------
-    // MARK: Preview Layer
-    // --------------------------------------------------------
-    private func setupPreview() {
-        guard let camera else { return }
-        previewLayer.session = camera.cameraSession
+        // Preview
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspect
-        layer.addSublayer(previewLayer)
+        view.previewLayer = previewLayer
+        view.layer.addSublayer(previewLayer)
+
+        // --------------------------------------------------------
+        // Create overlays
+        // --------------------------------------------------------
+        let dotLayer        = DotTrackingOverlayLayer()
+        let velocityLayer   = VelocityOverlayLayer()
+        let rsLineLayer     = RSLineIndexOverlayLayer()
+        let rspnpLayer      = RSPnPDebugOverlayLayer()
+        let spinAxisLayer   = SpinAxisOverlayLayer()
+        let spinDriftLayer  = SpinDriftOverlayLayer()
+        let rpeLayer        = RPEOverlayLayer()
+        let hudLayer        = HUDOverlayLayer()
+
+        view.dotLayer       = dotLayer
+        view.velocityLayer  = velocityLayer
+        view.rsLineLayer    = rsLineLayer
+        view.rspnpLayer     = rspnpLayer
+        view.spinAxisLayer  = spinAxisLayer
+        view.spinDriftLayer = spinDriftLayer
+        view.rpeLayer       = rpeLayer
+        view.hudLayer       = hudLayer
+
+        // --------------------------------------------------------
+        // Add in correct z-order (bottom → top)
+        // --------------------------------------------------------
+        view.layer.addSublayer(dotLayer)
+        view.layer.addSublayer(velocityLayer)
+        view.layer.addSublayer(rsLineLayer)
+        view.layer.addSublayer(rspnpLayer)
+        view.layer.addSublayer(spinAxisLayer)
+        view.layer.addSublayer(spinDriftLayer)   // NEW layer
+        view.layer.addSublayer(rpeLayer)
+        view.layer.addSublayer(hudLayer)
+
+        return view
     }
 
-    // --------------------------------------------------------
-    // MARK: Overlay Layers Setup
-    // --------------------------------------------------------
-    private func setupOverlays() {
+    // ============================================================
+    // MARK: - UPDATE UI VIEW
+    // ============================================================
+    func updateUIView(_ uiView: PreviewContainerView, context: Context) {
+        guard let frame = camera.latestFrame else { return }
 
-        dotLayer.contentsScale = UIScreen.main.scale
-        velocityLayer.contentsScale = UIScreen.main.scale
-        kltDebugLayer.contentsScale = UIScreen.main.scale
-        poseLayer.contentsScale = UIScreen.main.scale
-        rsTimingLayer.contentsScale = UIScreen.main.scale
-        rsGeometryLayer.contentsScale = UIScreen.main.scale
-        spinAxisLayer.contentsScale = UIScreen.main.scale
-        rpeLayer.contentsScale = UIScreen.main.scale
-        performanceHUD.contentsScale = UIScreen.main.scale
+        uiView.previewLayer?.frame = uiView.bounds
+        uiView.intrinsics = intrinsics
 
-        // Z-ORDER (bottom → top)
-        // 1. previewLayer
-        // 2. dotLayer
-        // 3. velocityLayer
-        // 4. kltDebugLayer
-        // 5. poseLayer
-        // 6. rsTimingLayer
-        // 7. rsGeometryLayer
-        // 8. spinAxisLayer
-        // 9. rpeLayer
-        // 10. performanceHUD
-
-        layer.addSublayer(dotLayer)
-        layer.addSublayer(velocityLayer)
-        layer.addSublayer(kltDebugLayer)
-        layer.addSublayer(poseLayer)
-        layer.addSublayer(rsTimingLayer)
-        layer.addSublayer(rsGeometryLayer)
-        layer.addSublayer(spinAxisLayer)
-        layer.addSublayer(rpeLayer)
-        layer.addSublayer(performanceHUD)
+        uiView.updateFrame(frame, size: uiView.bounds.size)
     }
 
-    // --------------------------------------------------------
-    // MARK: Layout Synchronization
-    // --------------------------------------------------------
-    override func layoutSubviews() {
-        super.layoutSubviews()
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        let allBounds = bounds
-
-        previewLayer.frame = allBounds
-        dotLayer.frame = allBounds
-        velocityLayer.frame = allBounds
-        kltDebugLayer.frame = allBounds
-        poseLayer.frame = allBounds
-        rsTimingLayer.frame = allBounds
-        rsGeometryLayer.frame = allBounds
-        spinAxisLayer.frame = allBounds
-        rpeLayer.frame = allBounds
-        performanceHUD.frame = allBounds
-
-        CATransaction.commit()
-    }
-
-    // --------------------------------------------------------
-    // MARK: Overlay Update Loop
-    // --------------------------------------------------------
-    func updateOverlays() {
-        guard let camera, let frame = camera.latestFrame else { return }
-
-        dotLayer.update(frame: frame)
-        velocityLayer.update(frame: frame)
-        kltDebugLayer.update(frame: frame)
-        poseLayer.update(frame: frame)
-        rsTimingLayer.update(frame: frame)
-        rsGeometryLayer.update(frame: frame)
-        spinAxisLayer.update(frame: frame)
-        rpeLayer.update(frame: frame)
-        performanceHUD.update(frame: frame)
+    class Coordinator: NSObject {
+        let parent: CameraPreviewView
+        init(_ parent: CameraPreviewView) { self.parent = parent }
     }
 }
