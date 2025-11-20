@@ -5,212 +5,289 @@
 
 import Foundation
 import AVFoundation
-import CoreMedia
 import CoreVideo
-import UIKit
+import SwiftUI
+import Combine
+import simd
 
-@MainActor
-public final class CameraManager: NSObject, ObservableObject {
+/// Central owner of:
+/// • AVCaptureSession
+/// • Frame stream
+/// • VisionPipeline
+/// • AutoCalibration integration
+/// • Intrinsics + RS timing injection
+/// • Latest VisionFrameData for UI
+///
+/// Runs on a dedicated high-priority background queue.
+///
+/// Threading Model:
+/// • Capture → captureQueue
+/// • Pipeline → captureQueue
+/// • UI updates → main queue
+///
+/// All calibration updates are atomic and isolated.
+final class CameraManager: NSObject, ObservableObject {
 
-    // =========================================================
-    // MARK: - Rolling-Shutter Timing Model (v2)
-    // =========================================================
-    //
-    // Loads calibrated RS timing model if available,
-    // otherwise falls back to linear.
-    //
-    @Published public private(set) var rsTimingModel: RSTimingModelProtocol =
-        RSTimingModelFactory.make()
+    // ============================================================
+    // MARK: - Published State
+    // ============================================================
+    @MainActor @Published public var latestFrame: VisionFrameData?
+    @MainActor @Published public var isCalibrated: Bool = false
+    @MainActor @Published public var calibration: CalibrationResult?
+    @MainActor @Published public var isInCalibrationMode: Bool = false
+    @MainActor @Published public var authorizationStatus: AVAuthorizationStatus = .notDetermined
 
-    // =========================================================
-    // MARK: - Pipeline
-    // =========================================================
-    let pipeline = VisionPipeline()
+    // ============================================================
+    // MARK: - Internals
+    // ============================================================
 
-    // =========================================================
-    // MARK: - Capture
-    // =========================================================
     private let session = AVCaptureSession()
-    private let videoOutput = AVCaptureVideoDataOutput()
 
-    public var cameraSession: AVCaptureSession { session }
+    private let captureQueue = DispatchQueue(
+        label: "com.launchlab.camera.capture",
+        qos: .userInteractive,
+        attributes: [],
+        autoreleaseFrequency: .workItem
+    )
 
-    // =========================================================
+    private let pipeline = VisionPipeline()
+
+    private var videoOutput: AVCaptureVideoDataOutput!
+    private var device: AVCaptureDevice?
+
+    private var intrinsics: CameraIntrinsics = .zero
+
+    // Calibration storage location
+    private let calibrationURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent("calibration.json")
+    }()
+
+    // ============================================================
+    // MARK: - Init
+    // ============================================================
+    override init() {
+        super.init()
+        loadPersistedCalibration()
+        setupSession()
+    }
+
+    // ============================================================
     // MARK: - Authorization
-    // =========================================================
-    @Published public private(set) var authorizationStatus: AVAuthorizationStatus = .notDetermined
-
-    public func checkAuth() async {
+    // ============================================================
+    @MainActor
+    func checkAuth() async {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         authorizationStatus = status
 
-        switch status {
-        case .authorized:
-            return
-        case .notDetermined:
+        if status == .notDetermined {
             let granted = await AVCaptureDevice.requestAccess(for: .video)
             authorizationStatus = granted ? .authorized : .denied
-        default:
-            return
+        }
+
+        if authorizationStatus == .authorized {
+            startSession()
         }
     }
 
-    // =========================================================
-    // MARK: - Intrinsics
-    // =========================================================
-    @Published public private(set) var intrinsics = CameraIntrinsics.zero
-
-    // =========================================================
-    // MARK: - Latest Frame (for overlays)
-    // =========================================================
-    @Published private(set) var latestFrame: VisionFrameData?
-
-    // =========================================================
-    // MARK: - Init
-    // =========================================================
-    public override init() {
-        super.init()
-
-        // Load RS timing model at startup
-        self.rsTimingModel = RSTimingModelFactory.make()
-    }
-
-    // =========================================================
-    // MARK: - Start session
-    // =========================================================
-    public func start() async {
-        guard authorizationStatus == .authorized else { return }
-
+    // ============================================================
+    // MARK: - Session Setup
+    // ============================================================
+    private func setupSession() {
         session.beginConfiguration()
-        session.sessionPreset = .hd1280x720
+        session.sessionPreset = .high
 
         guard let device = AVCaptureDevice.default(
             .builtInWideAngleCamera,
             for: .video,
             position: .back
         ) else {
-            print("❌ No back camera available")
-            session.commitConfiguration()
+            print("[CameraManager] ERROR: No camera available.")
             return
         }
 
-        guard let input = try? AVCaptureDeviceInput(device: device) else {
-            print("❌ Unable to create camera input")
-            session.commitConfiguration()
-            return
-        }
-        if session.canAddInput(input) {
-            session.addInput(input)
+        self.device = device
+
+        do {
+            let input = try AVCaptureDeviceInput(device: device)
+            if session.canAddInput(input) {
+                session.addInput(input)
+            }
+        } catch {
+            print("[CameraManager] ERROR: Cannot add camera input:", error)
         }
 
-        // Video output
-        videoOutput.setSampleBufferDelegate(
-            self,
-            queue: DispatchQueue(label: "cam.queue")
-        )
-
+        videoOutput = AVCaptureVideoDataOutput()
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String:
                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         ]
+        videoOutput.setSampleBufferDelegate(self, queue: captureQueue)
+        videoOutput.alwaysDiscardsLateVideoFrames = true
 
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
         }
 
-        if let connection = videoOutput.connection(with: .video),
-           connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+        if let conn = videoOutput.connection(with: .video),
+           conn.isVideoOrientationSupported {
+            conn.videoOrientation = .portrait
         }
 
         session.commitConfiguration()
-        session.startRunning()
     }
 
-    public func stop() {
-        session.stopRunning()
+    // ============================================================
+    // MARK: - Session Start
+    // ============================================================
+    private func startSession() {
+        captureQueue.async {
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
+        }
     }
 
-    // =========================================================
-    // MARK: - Preview Layer
-    // =========================================================
-    public func makePreviewLayer() -> AVCaptureVideoPreviewLayer {
-        let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspect
-        return layer
+    // ============================================================
+    // MARK: - Calibration Mode
+    // ============================================================
+    @MainActor
+    public func enterCalibrationMode() {
+        isInCalibrationMode = true
     }
 
-    // =========================================================
-    // MARK: - Intrinsics Extraction
-    // =========================================================
-    private func updateIntrinsics(from sampleBuffer: CMSampleBuffer) {
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+    @MainActor
+    public func exitCalibrationMode() {
+        isInCalibrationMode = false
+    }
 
-        let key = "CameraIntrinsicMatrix" as CFString
-        guard let ext = CMFormatDescriptionGetExtension(formatDesc, extensionKey: key),
-              let dict = ext as? [String: Any],
-              let data = dict["data"] as? [NSNumber],
-              data.count == 9
-        else { return }
+    // ============================================================
+    // MARK: - APPLY CALIBRATION (internal)
+    // ============================================================
+    private func applyCalibration(_ c: CalibrationResult) {
 
-        let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
-
-        let fx = Float(truncating: data[0])
-        let fy = Float(truncating: data[4])
-        let cx = Float(truncating: data[2])
-        let cy = Float(truncating: data[5])
-
+        // 1. Apply intrinsics
         intrinsics = CameraIntrinsics(
-            fx: fx, fy: fy,
-            cx: cx, cy: cy,
-            width: Int(dims.width),
-            height: Int(dims.height)
+            fx: c.fx, fy: c.fy,
+            cx: c.cx, cy: c.cy,
+            width: c.width,
+            height: c.height
         )
-    }
-}
 
-// ============================================================
-// MARK: - SampleBuffer Delegate
-// ============================================================
+        pipeline.calibratedIntrinsics = intrinsics
+
+        // 2. Apply RS timing model
+        pipeline.rsTimingModel = c.rsTimingModel
+
+        // 3. Tilt offsets
+        pipeline.cameraTiltPitch = c.pitch
+        pipeline.cameraTiltRoll  = c.roll
+
+        // 4. Translation offset
+        pipeline.cameraTranslationOffset = c.translationOffset
+
+        // 5. Distance-to-ball scalar
+        pipeline.ballDistanceMeters = c.ballDistance
+
+        // 6. Lighting normalization
+        pipeline.lightingGain = c.lightingGain
+
+        // 7. Stability flag
+        isCalibrated = c.isStable
+    }
+
+    // ============================================================
+    // MARK: - PUBLIC FINALIZATION METHOD (UI → manager)
+    // ============================================================
+    ///
+    /// This is the required missing piece.
+    /// Called by CalibrationFlowView when AutoCalibration finishes.
+    ///
+    @MainActor
+    public func finishCalibration(_ result: CalibrationResult) {
+        calibration = result
+        isCalibrated = result.isStable
+
+        // Apply to pipeline + internal intrinsics
+        applyCalibration(result)
+
+        // Persist to disk
+        persistCalibration(result)
+
+        // Exit calibration mode
+        isInCalibrationMode = false
+    }
+
+    // ============================================================
+    // MARK: - Persistence
+    // ============================================================
+    private func persistCalibration(_ c: CalibrationResult) {
+        do {
+            let data = try JSONEncoder().encode(c)
+            try data.write(to: calibrationURL, options: .atomic)
+        } catch {
+            print("[CameraManager] ERROR: Failed to write calibration:", error)
+        }
+    }
+
+    private func loadPersistedCalibration() {
+        guard let data = try? Data(contentsOf: calibrationURL) else { return }
+
+        do {
+            let c = try JSONDecoder().decode(CalibrationResult.self, from: data)
+            applyCalibration(c)
+
+            DispatchQueue.main.async {
+                self.calibration = c
+                self.isCalibrated = c.isStable
+            }
+
+        } catch {
+            print("[CameraManager] ERROR: Failed to decode calibration:", error)
+        }
+    }
+
+    // ============================================================
+    // MARK: - Frame Processing
+    // ============================================================
+}
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
-    public nonisolated func captureOutput(
+    func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard let pb = sampleBuffer.imageBuffer else { return }
-        let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        // Skip frames during calibration mode
+        guard !isInCalibrationMode else { return }
+
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let time = pts.seconds
 
         let width  = CVPixelBufferGetWidth(pb)
         let height = CVPixelBufferGetHeight(pb)
 
-        // MainActor hop -- process vision pipeline
-        Task { @MainActor in
-            let frame = VisionFrameData(
-                pixelBuffer: pb,
-                width: width,
-                height: height,
-                timestamp: ts,
-                intrinsics: self.intrinsics,
-                pose: nil,
-                dots: []
-            )
+        // Build frame container
+        let frame = VisionFrameData(
+            pixelBuffer: pb,
+            width: width,
+            height: height,
+            timestamp: time,
+            intrinsics: intrinsics,
+            pose: nil,
+            dots: []
+        )
 
-            // Push calibrated timing model into pipeline
-            self.pipeline.rsTimingModel = self.rsTimingModel
+        // Run VisionPipeline
+        let out = pipeline.process(frame)
 
-            // Process
-            let processed = self.pipeline.process(frame)
-
-            // Publish for overlays
-            self.latestFrame = processed
-        }
-
-        // Update intrinsics (separate)
-        Task { @MainActor [weak self] in
-            self?.updateIntrinsics(from: sampleBuffer)
+        // Publish to UI
+        DispatchQueue.main.async {
+            self.latestFrame = out
         }
     }
 }
