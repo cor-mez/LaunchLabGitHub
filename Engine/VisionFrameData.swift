@@ -25,6 +25,9 @@ final class VisionFrameData {
     public var rspnp: RSPnPResult?
 
     public var spin: SpinResult?
+    public var rsResiduals: [RPEResidual] = []
+
+    public var lkDebug: PyrLKDebugInfo = PyrLKDebugInfo()
 
     init(
         pixelBuffer: CVPixelBuffer,

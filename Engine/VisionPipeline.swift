@@ -11,9 +11,6 @@ import simd
 
 final class VisionPipeline {
 
-    // ---------------------------------------------------------
-    // MARK: - Submodules
-    // ---------------------------------------------------------
     private let detector = DotDetector()
     private let tracker = DotTracker()
     private let lk = PyrLKRefiner()
@@ -29,17 +26,11 @@ final class VisionPipeline {
     private let rsPnP = RSPnPSolver()
 
     private let spinSolver = SpinAxisSolver()
-
     private let dotModel = DotModel()
+    private let rpe = RPEResiduals()
 
-    // ---------------------------------------------------------
-    // MARK: - State
-    // ---------------------------------------------------------
     private var prevFrame: VisionFrameData?
 
-    // ---------------------------------------------------------
-    // MARK: - Main Entry
-    // ---------------------------------------------------------
     func process(_ curr: VisionFrameData) -> VisionFrameData {
 
         let t_total = profiler.begin("total_pipeline")
@@ -55,11 +46,11 @@ final class VisionPipeline {
         let tracked = tracker.track(prev: prevDots, currPoints: detectedPoints)
         profiler.end("tracker", t_trk)
 
-        // 3. PYR LK
+        // 3. PYR LK (with debug)
         let t_lk = profiler.begin("lk_refiner")
-        let refined = prevFrame != nil
-            ? lk.refine(prevFrame: prevFrame!, currFrame: curr, tracked: tracked)
-            : tracked
+        let (refined, lkDebugInfo) = prevFrame != nil
+            ? lk.refineWithDebug(prevFrame: prevFrame!, currFrame: curr, tracked: tracked)
+            : (tracked, PyrLKDebugInfo())
         profiler.end("lk_refiner", t_lk)
 
         // 4. VELOCITY KF
@@ -93,7 +84,7 @@ final class VisionPipeline {
             intrinsics: curr.intrinsics.matrix
         )
 
-        // 9. RS CORRECTION (v1.5)
+        // 9. RS CORRECTION
         let baseR = poseOut?.R ?? simd_float3x3(diagonal: SIMD3<Float>(1,1,1))
         let baseT = poseOut?.T ?? SIMD3<Float>(0,0,0)
         let corrected = rsCorr.correct(
@@ -105,7 +96,7 @@ final class VisionPipeline {
             baseTimestamp: Float(curr.timestamp)
         )
 
-        // 10. RS-PnP v2 SOLVER
+        // 10. RS-PnP v2
         let rspnpResult = rsPnP.solve(
             corrected: corrected,
             intrinsics: curr.intrinsics.matrix,
@@ -115,7 +106,21 @@ final class VisionPipeline {
         // 11. SPIN SOLVER
         let spinOut = spinSolver.solve(from: rspnpResult)
 
-        // 12. BUILD OUTPUT FRAME
+        // 12. RPE
+        let rpeList: [RPEResidual]
+        if let rs = rspnpResult {
+            rpeList = rpe.compute(
+                modelPoints: modelPoints,
+                imagePoints: imagePoints,
+                rotation: rs.R,
+                translation: rs.T,
+                intrinsics: curr.intrinsics.matrix
+            )
+        } else {
+            rpeList = []
+        }
+
+        // 13. BUILD FRAME
         let out = VisionFrameData(
             pixelBuffer: curr.pixelBuffer,
             width: curr.width,
@@ -132,6 +137,8 @@ final class VisionPipeline {
         out.rsCorrected = corrected
         out.rspnp = rspnpResult
         out.spin = spinOut
+        out.rsResiduals = rpeList
+        out.lkDebug = lkDebugInfo
 
         profiler.end("total_pipeline", t_total)
         profiler.nextFrame()

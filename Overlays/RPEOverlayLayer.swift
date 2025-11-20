@@ -3,136 +3,97 @@
 //  LaunchLab
 //
 
-import Foundation
-import QuartzCore
-import CoreGraphics
 import UIKit
+import QuartzCore
 import simd
 
 final class RPEOverlayLayer: CALayer {
 
-    private var frameData: VisionFrameData?
+    private var residuals: [RPEResidual] = []
+    private var rms: Float = 0
 
-    public func update(frame: VisionFrameData) {
-        self.frameData = frame
+    override init() {
+        super.init()
+        contentsScale = UIScreen.main.scale
+        isOpaque = false
+        needsDisplayOnBoundsChange = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError()
+    }
+
+    func update(frame: VisionFrameData) {
+        let rs = frame.rsResiduals
+        residuals = rs
+
+        if rs.isEmpty {
+            rms = 0
+        } else {
+            let sum = rs.reduce(Float(0)) { $0 + ($1.errorMag * $1.errorMag) }
+            rms = sqrt(sum / Float(rs.count))
+        }
+
         setNeedsDisplay()
     }
 
     override func draw(in ctx: CGContext) {
-        guard let frame = frameData else { return }
-        guard let pose = frame.pose else { return }
+        ctx.clear(bounds)
 
-        let R = pose.R
-        let T = pose.T
-        let K = frame.intrinsics.matrix
+        guard !residuals.isEmpty else {
+            drawRMSText(ctx: ctx)
+            return
+        }
 
-        let viewSize = bounds.size
-        let bufferW = frame.width
-        let bufferH = frame.height
-
-        var errors: [Float] = []
-
-        // ---------------------------------------------------------
-        // Draw for each dot
-        // ---------------------------------------------------------
-        for dot in frame.dots {
-            let id = dot.id
-            let Xw = DotModel().point(for: id)
-
-            // Camera coordinates
-            let Xc = R * Xw + T
-            if Xc.z <= 1e-6 { continue }
-
-            // Projected pixel
-            let projPix = PoseSolver.projectPoint(Xc, intrinsics: K)
-            let projCG = CGPoint(x: CGFloat(projPix.x), y: CGFloat(projPix.y))
-
-            // Observed pixel
-            let obs = dot.position
-
-            // Map to view coordinates
-            let projView = VisionOverlaySupport.mapPointFromBufferToView(
-                point: projCG,
-                bufferWidth: bufferW,
-                bufferHeight: bufferH,
-                viewSize: viewSize
+        for r in residuals {
+            let obs = VisionOverlaySupport.mapPointFromBufferToView(
+                CGPoint(x: CGFloat(r.observed.x),
+                        y: CGFloat(r.observed.y)),
+                viewFrame: bounds
             )
 
-            let obsView = VisionOverlaySupport.mapPointFromBufferToView(
-                point: obs,
-                bufferWidth: bufferW,
-                bufferHeight: bufferH,
-                viewSize: viewSize
+            let prj = VisionOverlaySupport.mapPointFromBufferToView(
+                CGPoint(x: CGFloat(r.projected.x),
+                        y: CGFloat(r.projected.y)),
+                viewFrame: bounds
             )
 
-            let dx = Float(obs.x - CGFloat(projPix.x))
-            let dy = Float(obs.y - CGFloat(projPix.y))
-            let e = sqrt(dx*dx + dy*dy)
-            errors.append(e)
+            let color: CGColor = {
+                let e = r.errorMag
+                if e < 1.0 { return CGColor(red: 0, green: 1, blue: 0, alpha: 1) }
+                if e < 3.0 { return CGColor(red: 1, green: 1, blue: 0, alpha: 1) }
+                return CGColor(red: 1, green: 0, blue: 0, alpha: 1)
+            }()
 
-            // Color encode error
-            let color = rpeColor(magnitude: CGFloat(e))
-
-            // Draw projected dot
-            VisionOverlaySupport.drawCircle(
-                context: ctx,
-                at: projView,
-                radius: 3,
-                color: UIColor.white.withAlphaComponent(0.7).cgColor
-            )
-
-            // Draw observed dot
-            VisionOverlaySupport.drawCircle(
-                context: ctx,
-                at: obsView,
-                radius: 3,
-                color: color
-            )
-
-            // Draw residual vector
+            ctx.setLineWidth(1.0)
             ctx.setStrokeColor(color)
-            ctx.setLineWidth(1.2)
+
             ctx.beginPath()
-            ctx.move(to: projView)
-            ctx.addLine(to: obsView)
+            ctx.move(to: prj)
+            ctx.addLine(to: obs)
             ctx.strokePath()
+
+            ctx.setFillColor(color)
+            ctx.beginPath()
+            ctx.addArc(center: obs, radius: 2.0, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+            ctx.fillPath()
         }
 
-        // ---------------------------------------------------------
-        // Draw text HUD
-        // ---------------------------------------------------------
-        if !errors.isEmpty {
-            let rms = sqrt(errors.reduce(0){$0 + $1*$1} / Float(errors.count))
-            let maxErr = errors.max() ?? 0
-            let inliers = errors.filter { $0 < 5 }.count
-            let outliers = errors.count - inliers
-
-            let text =
-            String(format: "RPE: %.2f px RMS\nMax: %.2f px\nInliers: %d\nOutliers: %d",
-                   rms, maxErr, inliers, outliers)
-
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedSystemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: UIColor.white,
-            ]
-
-            text.draw(
-                with: CGRect(x: 8, y: 8, width: 240, height: 80),
-                options: .usesLineFragmentOrigin,
-                attributes: attrs,
-                context: nil
-            )
-        }
+        drawRMSText(ctx: ctx)
     }
 
-    // ---------------------------------------------------------
-    // MARK: - Color Mapping
-    // ---------------------------------------------------------
-    private func rpeColor(magnitude e: CGFloat) -> CGColor {
-        switch e {
-        case 0..<2:   return UIColor.green.withAlphaComponent(0.9).cgColor
-        case 2..<5:   return UIColor.yellow.withAlphaComponent(0.9).cgColor
-        default:      return UIColor.red.withAlphaComponent(0.9).cgColor
-        }
+    private func drawRMSText(ctx: CGContext) {
+        let text = String(format: "RMS: %.2f px", rms)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: UIColor.white
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attributes)
+        let size = attributed.size()
+
+        let rect = CGRect(x: 8, y: 8, width: size.width, height: size.height)
+        UIGraphicsPushContext(ctx)
+        attributed.draw(in: rect)
+        UIGraphicsPopContext()
     }
 }
