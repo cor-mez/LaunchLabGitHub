@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		05BE35F32ECBB078000AB2AF /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 05BE35F22ECBB06D000AB2AF /* .gitignore */; };
-		05BE363E2ECBFFD7000AB2AF /* opencv2.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 05BE363D2ECBFFD7000AB2AF /* opencv2.framework */; };
 		05F8339C2ECAFA320053B9D5 /* LaunchLab.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */; };
 /* End PBXBuildFile section */
 
@@ -30,16 +29,33 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LaunchLabGitHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		05BE35F22ECBB06D000AB2AF /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
-		05BE363D2ECBFFD7000AB2AF /* opencv2.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = opencv2.framework; sourceTree = "<group>"; };
-		05BE363F2ECC003B000AB2AF /* LaunchLabGitHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = LaunchLabGitHub.app; path = /Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHub.app; sourceTree = "<absolute>"; };
-		05BE36402ECC003B000AB2AF /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = LaunchLabGitHubTests.xctest; path = /Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHub.app/Contents/PlugIns/LaunchLabGitHubTests.xctest; sourceTree = "<absolute>"; };
-		05BE36412ECC003B000AB2AF /* LaunchLabGitHubUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = LaunchLabGitHubUITests.xctest; path = "/Users/corymeza/Developer/LaunchLabGitHub/build/Debug/LaunchLabGitHubUITests-Runner.app/Contents/PlugIns/LaunchLabGitHubUITests.xctest"; sourceTree = "<absolute>"; };
 		05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LaunchLab.xcconfig; sourceTree = "<group>"; };
 		05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LaunchLabGithub.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		051316332ED1462E00B539FF /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 05F833262ECAF77B0053B9D5 /* LaunchLabGitHub */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		051316302ED1451D00B539FF /* info */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				051316332ED1462E00B539FF /* Exceptions for "info" folder in "LaunchLabGitHub" target */,
+			);
+			path = info;
+			sourceTree = "<group>";
+		};
 		05F833592ECAF8450053B9D5 /* App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = App;
@@ -59,7 +75,6 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			explicitFileTypes = {
 				Cpp/EPnP.mm = sourcecode.cpp.objcpp;
-				Cpp/OpenCVBridge.mm = sourcecode.cpp.cpp;
 			};
 			path = Vision;
 			sourceTree = "<group>";
@@ -76,7 +91,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				05BE363E2ECBFFD7000AB2AF /* opencv2.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -100,6 +114,7 @@
 		05F8331E2ECAF77B0053B9D5 = {
 			isa = PBXGroup;
 			children = (
+				051316302ED1451D00B539FF /* info */,
 				05BE35F22ECBB06D000AB2AF /* .gitignore */,
 				05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */,
 				05F8339A2ECAF93E0053B9D5 /* Frameworks */,
@@ -109,13 +124,15 @@
 				05F833722ECAF8450053B9D5 /* Vision */,
 				05F833912ECAF8AA0053B9D5 /* Camera */,
 				05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */,
+				05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */,
+				05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */,
+				05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */,
 			);
 			sourceTree = "<group>";
 		};
 		05F8339A2ECAF93E0053B9D5 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				05BE363D2ECBFFD7000AB2AF /* opencv2.framework */,
 			);
 			path = Frameworks;
 			sourceTree = "<group>";
@@ -136,6 +153,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
+				051316302ED1451D00B539FF /* info */,
 				05F833592ECAF8450053B9D5 /* App */,
 				05F833642ECAF8450053B9D5 /* Engine */,
 				05F833692ECAF8450053B9D5 /* Overlays */,
@@ -146,7 +164,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHub;
-			productReference = 05BE363F2ECC003B000AB2AF /* LaunchLabGitHub.app */;
+			productReference = 05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */;
 			productType = "com.apple.product-type.application";
 		};
 		05F833372ECAF77D0053B9D5 /* LaunchLabGitHubTests */ = {
@@ -166,7 +184,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHubTests;
-			productReference = 05BE36402ECC003B000AB2AF /* LaunchLabGitHubTests.xctest */;
+			productReference = 05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		05F833412ECAF77D0053B9D5 /* LaunchLabGitHubUITests */ = {
@@ -186,7 +204,7 @@
 			packageProductDependencies = (
 			);
 			productName = LaunchLabGitHubUITests;
-			productReference = 05BE36412ECC003B000AB2AF /* LaunchLabGitHubUITests.xctest */;
+			productReference = 05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -445,6 +463,7 @@
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
+				INFOPLIST_FILE = info/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -455,7 +474,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
@@ -466,10 +485,10 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = App.LaunchLabGitHub;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
+				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(PROJECT_DIR)/Vision/Cpp/LaunchLabGitHub-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 2.2;
@@ -500,6 +519,7 @@
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
+				INFOPLIST_FILE = info/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -510,7 +530,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
@@ -521,10 +541,10 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = App.LaunchLabGitHub;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
+				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(PROJECT_DIR)/Vision/Cpp/LaunchLabGitHub-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 2.2;

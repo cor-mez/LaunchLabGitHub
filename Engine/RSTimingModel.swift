@@ -6,101 +6,41 @@
 import Foundation
 import simd
 
-// ============================================================
-// MARK: - Protocol
-// ============================================================
+public struct RSTimingModel {
 
-public protocol RSTimingModelProtocol {
-    /// row: pixel row (0 … height-1)
-    /// height: image height
-    /// frameTimestamp: Double (seconds)
-    func timestampForRow(
-        _ row: Float,
-        height: Float,
-        frameTimestamp: Double
-    ) -> Float
-}
+    public let imageHeight: Int
+    public let readoutTime: Float
+    public let exposureTime: Float
+    private let timePerRow: Float
 
-// ============================================================
-// MARK: - Linear Model (Fallback)
-// ============================================================
-
-public final class LinearRSTimingModel: RSTimingModelProtocol {
-
-    private let readout: Float   // seconds
-
-    public init(readout: Float = 0.0039) {
-        self.readout = readout
+    // Static factory (per your directive)
+    public static func make(imageHeight: Int) -> RSTimingModel {
+        // Default values for iPhone 240 fps
+        let readout: Float = 1.0 / 5000.0
+        let exposure: Float = 1.0 / 10000.0
+        let h = max(imageHeight, 1)
+        return RSTimingModel(
+            imageHeight: imageHeight,
+            readoutTime: readout,
+            exposureTime: exposure,
+            timePerRow: readout / Float(h)
+        )
     }
 
-    public func timestampForRow(
-        _ row: Float,
-        height: Float,
-        frameTimestamp: Double
-    ) -> Float {
-
-        guard height > 1 else {
-            return Float(frameTimestamp)
-        }
-
-        let y = max(0, min(height - 1, row))
-        let s = y / (height - 1)       // normalized 0→1
-        let dt = s * readout
-
-        return Float(frameTimestamp) + dt
-    }
-}
-
-// ============================================================
-// MARK: - Calibrated RS Timing Model
-// ============================================================
-
-public final class CalibratedRSTimingModel: RSTimingModelProtocol {
-
-    private let model: RSTimingCalibratedModel
-    private let readout: Float    // seconds (e.g., 0.0038)
-
-    public init(model: RSTimingCalibratedModel) {
-        self.model = model
-        self.readout = model.readout
+    private init(
+        imageHeight: Int,
+        readoutTime: Float,
+        exposureTime: Float,
+        timePerRow: Float
+    ) {
+        self.imageHeight = imageHeight
+        self.readoutTime = readoutTime
+        self.exposureTime = exposureTime
+        self.timePerRow = timePerRow
     }
 
-    public func timestampForRow(
-        _ row: Float,
-        height: Float,
-        frameTimestamp: Double
-    ) -> Float {
-
-        guard height > 1 else {
-            return Float(frameTimestamp)
-        }
-
-        // Normalize 0…1
-        let y = max(0, min(height - 1, row))
-        let s = y / (height - 1)             // normalized 0→1
-
-        // Evaluate calibrated curve(s)
-        // Curve is monotonic and outputs 0…1 timing fraction
-        let curveVal = Float(model.evaluate(s))
-
-        // Convert to seconds
-        let dt = curveVal * readout
-
-        return Float(frameTimestamp) + dt
-    }
-}
-
-// ============================================================
-// MARK: - RSTimingModel Factory
-// ============================================================
-
-public enum RSTimingModelFactory {
-
-    /// Loads model from disk, else linear fallback
-    public static func make() -> RSTimingModelProtocol {
-        if let loaded = RSTimingCalibratedModel.load() {
-            return CalibratedRSTimingModel(model: loaded)
-        }
-        return LinearRSTimingModel()
+    public func timestampForRow(_ row: Int) -> Float {
+        let clamped = max(0, min(imageHeight - 1, row))
+        return Float(clamped) * timePerRow + exposureTime * 0.5
     }
 }

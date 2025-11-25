@@ -5,6 +5,9 @@
 
 import Foundation
 
+/// Legacy IO for reading/writing RS timing calibration files.
+/// Maintains compatibility with the new RSTimingCalibratedModel.
+/// Safe to remove once migration is complete.
 public final class RSTimingCalibrationIO {
 
     public init() {}
@@ -15,10 +18,15 @@ public final class RSTimingCalibrationIO {
         return dir.appendingPathComponent("rs_timing.json")
     }
 
+    // ---------------------------------------------------------
+    // MARK: - SAVE
+    // ---------------------------------------------------------
     public func save(model: RSTimingCalibratedModel) {
+
+        // Write using new keys: readout + coeffs
         let dict: [String: Any] = [
             "readout": model.readout,
-            "curve": model.curve
+            "coeffs": model.coeffs
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: dict, options: []) {
@@ -31,14 +39,18 @@ public final class RSTimingCalibrationIO {
         }
     }
 
+    // ---------------------------------------------------------
+    // MARK: - LOAD
+    // ---------------------------------------------------------
     public func load() -> RSTimingCalibratedModel? {
+
         guard let data = try? Data(contentsOf: url),
               let o = try? JSONSerialization.jsonObject(with: data),
               let dict = o as? [String: Any],
               let r = dict["readout"] as? Float,
-              let c = dict["curve"] as? [Float]
+              let c = dict["coeffs"] as? [Double]
         else { return nil }
 
-        return RSTimingCalibratedModel(readout: r, curve: c)
+        return RSTimingCalibratedModel(coeffs: c, readout: r)
     }
 }

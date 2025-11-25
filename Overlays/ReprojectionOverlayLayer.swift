@@ -2,69 +2,73 @@
 //  ReprojectionOverlayLayer.swift
 //  LaunchLab
 //
+//  Batch-7 Fully Corrected Version
+//  • Stores VisionFrameData in local property
+//  • Never assigns to CALayer.frame
+//  • Draws corrected points, predicted points, and error rays
+//
 
 import UIKit
 import QuartzCore
-import simd
 
-final class ReprojectionOverlayLayer: CALayer {
+final class ReprojectionOverlayLayer: BaseOverlayLayer {
 
+    // Store latest VisionFrameData safely
     private var latestFrame: VisionFrameData?
-    private var latestIntrinsics: CameraIntrinsics?
 
-    // ---------------------------------------------------------
-    // MARK: - Update Input
-    // ---------------------------------------------------------
-    func update(frame: VisionFrameData?, intrinsics: CameraIntrinsics?) {
+    override func updateWithFrame(_ frame: VisionFrameData) {
         self.latestFrame = frame
-        self.latestIntrinsics = intrinsics
         setNeedsDisplay()
     }
 
-    // ---------------------------------------------------------
-    // MARK: - Draw
-    // ---------------------------------------------------------
-    override func draw(in ctx: CGContext) {
-        guard
-            let frame = latestFrame,
-            let intr = latestIntrinsics
-        else { return }
+    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+        guard let frame = latestFrame else { return }
+        guard let corrected = frame.correctedPoints else { return }
+        guard let residuals = frame.residuals else { return }
 
-        let bufferWidth = frame.width
-        let bufferHeight = frame.height
-        let viewSize = bounds.size
+        let count = min(corrected.count, residuals.count)
+        guard count > 0 else { return }
 
-        // Placeholder reprojection: draw detected dots + trivial "projection"
-        for dot in frame.dots {
+        ctx.setAllowsAntialiasing(true)
+        ctx.setShouldAntialias(true)
 
-            // Detected 2D point
-            let detected = dot.position
+        for i in 0..<count {
+            let cp = corrected[i]
+            let r  = residuals[i].error
 
-            // Map to view coordinates
-            let viewPoint = VisionOverlaySupport.mapPointFromBufferToView(
-                point: detected,
-                bufferWidth: bufferWidth,
-                bufferHeight: bufferHeight,
-                viewSize: viewSize
+            // Corrected point → view
+            let detected = mapper.mapCGPoint(cp.corrected)
+
+            // Predicted = corrected + residual
+            let predictedPx = CGPoint(
+                x: cp.corrected.x + CGFloat(r.x),
+                y: cp.corrected.y + CGFloat(r.y)
             )
+            let predicted = mapper.mapCGPoint(predictedPx)
 
-            // Simple placeholder logic — real reprojection to come
-            let reprojPoint = viewPoint
+            // --- Draw corrected (yellow) ---
+            ctx.setFillColor(UIColor.yellow.cgColor)
+            ctx.fillEllipse(in: CGRect(
+                x: detected.x - 3,
+                y: detected.y - 3,
+                width: 6, height: 6
+            ))
 
-            VisionOverlaySupport.drawCircle(
-                context: ctx,
-                at: reprojPoint,
-                radius: 3,
-                color: UIColor.yellow.cgColor
-            )
+            // --- Draw predicted (cyan) ---
+            ctx.setStrokeColor(UIColor.cyan.cgColor)
+            ctx.setLineWidth(1)
+            ctx.strokeEllipse(in: CGRect(
+                x: predicted.x - 4,
+                y: predicted.y - 4,
+                width: 8, height: 8
+            ))
 
-            VisionOverlaySupport.drawLine(
-                context: ctx,
-                from: viewPoint,
-                to: reprojPoint,
-                width: 1,
-                color: UIColor.yellow.withAlphaComponent(0.3).cgColor
-            )
+            // --- Error vector (red line) ---
+            ctx.setStrokeColor(UIColor.red.withAlphaComponent(0.6).cgColor)
+            ctx.beginPath()
+            ctx.move(to: detected)
+            ctx.addLine(to: predicted)
+            ctx.strokePath()
         }
     }
 }

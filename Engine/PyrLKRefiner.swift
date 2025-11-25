@@ -2,115 +2,181 @@
 //  PyrLKRefiner.swift
 //  LaunchLab
 //
+//  Stateless CPU-based Lucas–Kanade refinement.
+//  Inputs: VisionDots + two luma pixel buffers
+//  Outputs: refined VisionDots + raw flow vectors.
+//
+//  Window radius = 4 (9×9 window)
+//  Iterations    = 8
+//
 
 import Foundation
 import CoreVideo
 import CoreGraphics
-import UIKit
-import Metal
+import simd
 
-final class PyrLKRefiner {
+public final class PyrLKRefiner {
 
-    private let gpu = GPUProfiler.shared
+    private let windowRadius: Int = 4       // 9×9 window
+    private let maxIterations: Int = 8
+    private let epsilon: Float = 0.01
 
-    func refine(
-        prevFrame: VisionFrameData,
-        currFrame: VisionFrameData,
-        tracked: [VisionDot]
-    ) -> [VisionDot] {
+    public init() {}
 
-        guard !tracked.isEmpty else { return tracked }
+    // ------------------------------------------------------------
+    // MARK: - Public API
+    // ------------------------------------------------------------
+    public func refine(
+        dots: [VisionDot],
+        prevBuffer: CVPixelBuffer,
+        currBuffer: CVPixelBuffer
+    ) -> ([VisionDot], [SIMD2<Float>]) {
 
-        // -----------------------------------------------------
-        // GPU TIMESTAMP PLACEHOLDER (Option A)
-        // -----------------------------------------------------
-        var gpuMetrics: GPUMetrics?
-
-        if let device = gpu.device,
-           let queue = gpu.queue,
-           let cmd = queue.makeCommandBuffer() {
-
-            // Enable timing
-            cmd.addCompletedHandler { cb in
-                let m = self.gpu.profile(commandBuffer: cb)
-                gpuMetrics = m
-            }
-
-            cmd.commit()
+        guard !dots.isEmpty else {
+            return (dots, [])
         }
 
-        // -----------------------------------------------------
-        // CPU LK CALL
-        // -----------------------------------------------------
-        let prevPB = prevFrame.pixelBuffer
-        let currPB = currFrame.pixelBuffer
+        CVPixelBufferLockBaseAddress(prevBuffer, .readOnly)
+        CVPixelBufferLockBaseAddress(currBuffer, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(prevBuffer, .readOnly)
+            CVPixelBufferUnlockBaseAddress(currBuffer, .readOnly)
+        }
 
         guard
-            let prevLuma = CVPixelBufferGetBaseAddressOfPlane(prevPB, 0),
-            let currLuma = CVPixelBufferGetBaseAddressOfPlane(currPB, 0)
+            let prevBase = CVPixelBufferGetBaseAddressOfPlane(prevBuffer, 0),
+            let currBase = CVPixelBufferGetBaseAddressOfPlane(currBuffer, 0)
         else {
-            return tracked
+            return (dots, Array(repeating: SIMD2<Float>.zero, count: dots.count))
         }
 
-        let width = Int(CVPixelBufferGetWidth(prevPB))
-        let height = Int(CVPixelBufferGetHeight(prevPB))
-        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(prevPB, 0)
+        let width  = CVPixelBufferGetWidth(prevBuffer)
+        let height = CVPixelBufferGetHeight(prevBuffer)
 
-        var pointsPrev = [Float]()
-        pointsPrev.reserveCapacity(tracked.count * 2)
-        for d in tracked {
-            pointsPrev.append(Float(d.position.x))
-            pointsPrev.append(Float(d.position.y))
+        let prevStride = CVPixelBufferGetBytesPerRowOfPlane(prevBuffer, 0)
+        let currStride = CVPixelBufferGetBytesPerRowOfPlane(currBuffer, 0)
+
+        let prevLuma = prevBase.bindMemory(to: UInt8.self, capacity: height * prevStride)
+        let currLuma = currBase.bindMemory(to: UInt8.self, capacity: height * currStride)
+
+        var refinedDots: [VisionDot] = []
+        refinedDots.reserveCapacity(dots.count)
+
+        var flows: [SIMD2<Float>] = []
+        flows.reserveCapacity(dots.count)
+
+        for dot in dots {
+            let (refined, flow) = refineDot(
+                dot: dot,
+                prevLuma: prevLuma,
+                currLuma: currLuma,
+                width: width,
+                height: height,
+                prevStride: prevStride,
+                currStride: currStride
+            )
+            refinedDots.append(refined)
+            flows.append(flow)
         }
 
-        var pointsCurr = [Float](repeating: 0, count: pointsPrev.count)
-        var status = [UInt8](repeating: 0, count: tracked.count)
-        var error = [Float](repeating: 0, count: tracked.count)
+        return (refinedDots, flows)
+    }
 
-        ll_computePyrLKFlow(
-            prevLuma.assumingMemoryBound(to: UInt8.self),
-            currLuma.assumingMemoryBound(to: UInt8.self),
-            Int32(width),
-            Int32(height),
-            Int32(bytesPerRow),
-            pointsPrev,
-            Int32(tracked.count),
-            &pointsCurr,
-            &status,
-            &error
-        )
+    // ============================================================
+    // MARK: - Per-Dot LK Refinement
+    // ============================================================
 
-        // -----------------------------------------------------
-        // GPU metrics → FrameProfiler
-        // -----------------------------------------------------
-        if let m = gpuMetrics {
-            FrameProfiler.shared.recordGPU(m)
-        }
+    private func refineDot(
+        dot: VisionDot,
+        prevLuma: UnsafePointer<UInt8>,
+        currLuma: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int,
+        prevStride: Int,
+        currStride: Int
+    ) -> (VisionDot, SIMD2<Float>) {
 
-        // -----------------------------------------------------
-        // Build refined output
-        // -----------------------------------------------------
-        var refined: [VisionDot] = []
-        refined.reserveCapacity(tracked.count)
+        var x = Float(dot.position.x)
+        var y = Float(dot.position.y)
 
-        for i in 0..<tracked.count {
-            let d = tracked[i]
-            if status[i] == 1 {
-                let x = CGFloat(pointsCurr[i * 2 + 0])
-                let y = CGFloat(pointsCurr[i * 2 + 1])
-                refined.append(
-                    VisionDot(
-                        id: d.id,
-                        position: CGPoint(x: x, y: y),
-                        predicted: d.predicted,
-                        velocity: d.velocity
+        let originalX = x
+        let originalY = y
+
+        let r = windowRadius
+
+        for _ in 0..<maxIterations {
+
+            // Window must be fully inside image
+            if Int(x) - r < 1 || Int(x) + r >= width - 1 ||
+               Int(y) - r < 1 || Int(y) + r >= height - 1 {
+                break
+            }
+
+            var G = simd_float2x2(0)
+            var b = SIMD2<Float>(0, 0)
+
+            for wy in -r...r {
+                for wx in -r...r {
+                    let px = Int(x) + wx
+                    let py = Int(y) + wy
+
+                    // Prev intensity
+                    let I1 = Float(prevLuma[py * prevStride + px])
+
+                    // Spatial gradients (prev frame)
+                    let Ix = 0.5 * (
+                        Float(prevLuma[py * prevStride + (px + 1)]) -
+                        Float(prevLuma[py * prevStride + (px - 1)])
                     )
-                )
-            } else {
-                refined.append(d)
+                    let Iy = 0.5 * (
+                        Float(prevLuma[(py + 1) * prevStride + px]) -
+                        Float(prevLuma[(py - 1) * prevStride + px])
+                    )
+
+                    // Current intensity
+                    let I2 = Float(currLuma[py * currStride + px])
+                    let It = I2 - I1
+
+                    let g = SIMD2<Float>(Ix, Iy)
+                    G += simd_float2x2(
+                        SIMD2<Float>(g.x * g.x, g.x * g.y),
+                        SIMD2<Float>(g.y * g.x, g.y * g.y)
+                    )
+                    b += g * It
+                }
+            }
+
+            // Solve G * d = -b
+            let det = G[0,0] * G[1,1] - G[0,1] * G[1,0]
+            if abs(det) < 1e-6 {
+                break
+            }
+
+            let inv = simd_float2x2(
+                SIMD2<Float>( G[1,1], -G[0,1]),
+                SIMD2<Float>(-G[1,0],  G[0,0])
+            ) * (1.0 / det)
+
+            let d = -(inv * b)
+
+            x += d.x
+            y += d.y
+
+            if simd_length(d) < epsilon {
+                break
             }
         }
 
-        return refined
+        let refinedPos = CGPoint(x: CGFloat(x), y: CGFloat(y))
+        let flow = SIMD2<Float>(x - originalX, y - originalY)
+
+        let refinedDot = VisionDot(
+            id: dot.id,
+            position: refinedPos,
+            predicted: dot.predicted,   // nil per DotTracker contract
+            velocity: dot.velocity      // unchanged
+        )
+
+        return (refinedDot, flow)
     }
 }

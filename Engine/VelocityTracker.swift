@@ -2,86 +2,76 @@
 //  VelocityTracker.swift
 //  LaunchLab
 //
+//  Computes per-dot velocity between frames.
+//  Here: simple frame-to-frame displacement (no /dt),
+//  so overlay has clear, visible arrows.
+//
+//  - velocity = nil if no previous position
+//  - no smoothing
+//  - IDs preserved
+//
 
+import Foundation
 import CoreGraphics
-import simd
 
-final class VelocityTracker {
+public final class VelocityTracker {
 
-    private var filters: [Int: KalmanFilter2D] = [:]
-    private var lastTimestamp: CFTimeInterval?
+    // Last known dot positions keyed by ID
+    private var lastPositions: [Int: CGPoint] = [:]
 
-    // ---------------------------------------------------------
-    // MARK: - Velocity Gating
-    // ---------------------------------------------------------
-    private func gatedVelocity(_ v: CGVector) -> CGVector {
-        let dx = v.dx, dy = v.dy
+    public init() {}
 
-        if dx.isNaN || dy.isNaN || !dx.isFinite || !dy.isFinite {
-            return .zero
+    // ------------------------------------------------------------
+    // MARK: - Public API
+    // ------------------------------------------------------------
+    public func update(
+        previousDots: [VisionDot],
+        currentDots: [VisionDot],
+        dt: Double
+    ) -> [VisionDot] {
+
+        // We ignore dt for now and just use raw displacement.
+        // This keeps vectors easy to reason about visually.
+
+        // Build the previous-position map
+        lastPositions.removeAll(keepingCapacity: true)
+        for dot in previousDots {
+            lastPositions[dot.id] = dot.position
         }
-        let mag = sqrt(dx*dx + dy*dy)
-        if mag <= 4 { return v }
 
-        let scale = 4.0 / mag
-        return CGVector(dx: dx * scale, dy: dy * scale)
-    }
+        var output: [VisionDot] = []
+        output.reserveCapacity(currentDots.count)
 
-    // ---------------------------------------------------------
-    // MARK: - Process
-    // ---------------------------------------------------------
-    func process(_ dots: [VisionDot], timestamp: CFTimeInterval) -> [VisionDot] {
+        for dot in currentDots {
+            if let prevPos = lastPositions[dot.id] {
 
-        // Compute dt
-        var dt: Float = 1.0 / 240.0
-        if let last = lastTimestamp {
-            let raw = timestamp - last
-            if raw > 0.0005 && raw < 0.03 {
-                dt = Float(raw)
-            }
-        }
-        lastTimestamp = timestamp
+                let dx = dot.position.x - prevPos.x
+                let dy = dot.position.y - prevPos.y
 
-        var out: [VisionDot] = []
-        out.reserveCapacity(dots.count)
+                let v = CGVector(dx: dx, dy: dy)
 
-        for d in dots {
+                output.append(
+                    VisionDot(
+                        id: dot.id,
+                        position: dot.position,
+                        predicted: dot.predicted,
+                        velocity: v
+                    )
+                )
 
-            // --------------------------------------------
-            // Init or update KF
-            // --------------------------------------------
-            let pos = d.position
-
-            let kf: KalmanFilter2D
-            if let existing = filters[d.id] {
-                kf = existing
-                kf.predict(dt: dt)
-                kf.update(measuredPos: pos)
             } else {
-                kf = KalmanFilter2D(initialPos: pos)
-                filters[d.id] = kf
+                // No previous position → velocity = nil
+                output.append(
+                    VisionDot(
+                        id: dot.id,
+                        position: dot.position,
+                        predicted: dot.predicted,
+                        velocity: nil
+                    )
+                )
             }
-
-            // --------------------------------------------
-            // Compute gated velocity + predicted
-            // --------------------------------------------
-            let rawV = kf.velocity
-            let v = gatedVelocity(rawV)
-
-            let predicted = CGPoint(
-                x: pos.x + v.dx * CGFloat(dt),
-                y: pos.y + v.dy * CGFloat(dt)
-            )
-
-            out.append(
-                d.updating(predicted: predicted, velocity: v)
-            )
         }
 
-        // Prune filters for vanished dots
-        let activeIDs = Set(out.map { $0.id })
-        filters = filters.filter { activeIDs.contains($0.key) }
-
-        return out
+        return output
     }
 }

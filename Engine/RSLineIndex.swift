@@ -4,28 +4,28 @@
 //
 
 import Foundation
-import simd
+import CoreGraphics
 
-/// Computes which sensor row each dot lies on.
-/// This is a simple linear mapping used for RS timestamp estimation.
-final class RSLineIndex {
+public enum RSLineIndex {
 
-    /// Returns an array of line indices, one per dot.
-    /// Assumes the imagePoints are in pixel coordinates.
-    public func compute(
-        frame: VisionFrameData,
-        imagePoints: [SIMD2<Float>]
+    /// Compute the RS row index for each VisionDot.
+    /// row = floor(y) clamped to image height bounds.
+    public static func indexForDots(
+        _ dots: [VisionDot],
+        height: Int
     ) -> [Int] {
 
-        let h = Float(frame.height)
-        var out = [Int]()
-        out.reserveCapacity(imagePoints.count)
-
-        for p in imagePoints {
-            let y = max(0, min(h - 1, p.y))
-            out.append(Int(y))
+        guard height > 0 else {
+            return Array(repeating: 0, count: dots.count)
         }
 
-        return out
+        let maxRow = height - 1
+
+        return dots.map { dot in
+            let y = Int(floor(dot.position.y))
+            if y < 0 { return 0 }
+            if y > maxRow { return maxRow }
+            return y
+        }
     }
 }

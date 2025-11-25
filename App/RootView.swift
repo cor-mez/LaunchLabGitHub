@@ -1,3 +1,8 @@
+//
+//  RootView.swift
+//  LaunchLab
+//
+
 import SwiftUI
 import AVFoundation
 
@@ -10,9 +15,24 @@ struct RootView: View {
             switch camera.authorizationStatus {
 
             case .authorized:
-                CameraPreviewView()
+                ZStack {
+                    // Camera feed + CALayer overlays
+                    CameraPreviewView(
+                        session: camera.cameraSession,
+                        intrinsics: camera.intrinsics
+                    )
                     .environmentObject(camera)
                     .edgesIgnoringSafeArea(.all)
+
+                    // SwiftUI Debug HUD (no arguments now)
+                    DebugHUDView()
+                        .padding()
+                        .frame(maxWidth: .infinity,
+                               maxHeight: .infinity,
+                               alignment: .topLeading)
+                        // We WANT taps here for the BallLock tuning button,
+                        // so do NOT disable hit testing.
+                }
 
             case .notDetermined:
                 ProgressView("Requesting Camera Access…")
@@ -36,10 +56,13 @@ struct RootView: View {
             }
         }
         .onAppear {
-            Task {
-                if camera.authorizationStatus == .notDetermined {
-                    await camera.checkAuth()
-                }
+            if camera.authorizationStatus == .authorized {
+                camera.start()
+            }
+        }
+        .onChange(of: camera.authorizationStatus) { newStatus in
+            if newStatus == .authorized {
+                camera.start()
             }
         }
     }

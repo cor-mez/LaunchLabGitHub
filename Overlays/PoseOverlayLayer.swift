@@ -2,50 +2,67 @@
 //  PoseOverlayLayer.swift
 //  LaunchLab
 //
+//  Batch-7 Fully Corrected Version
+//  • Stores VisionFrameData in local property
+//  • Never assigns to CALayer.frame
+//  • Uses mapper exclusively
+//  • Draws only when rspnp.isValid
+//
 
 import UIKit
+import simd
 
-final class PoseOverlayLayer: CALayer {
+final class PoseOverlayLayer: BaseOverlayLayer {
 
-    weak var camera: CameraManager?
+    // Store the latest VisionFrameData (NOT a CGRect)
+    private var latestFrame: VisionFrameData?
 
-    override func draw(in ctx: CGContext) {
-        guard let camera else { return }
+    override func updateWithFrame(_ frame: VisionFrameData) {
+        self.latestFrame = frame
+        setNeedsDisplay()
+    }
 
-        // MainActor hop to read @Published latestFrame
-        let frame = MainActor.assumeIsolated {
-            camera.latestFrame
-        }
-        guard let frame else { return }
-        guard let pose = frame.pose else { return }
+    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+        guard let frame = latestFrame else { return }
+        guard let rs = frame.rspnp, rs.isValid else { return }
 
-        // --- Projection: 3D Translation (T) → Pixel (u,v) ---
-        let X = pose.T.x
-        let Y = pose.T.y
-        let Z = pose.T.z
+        // Camera-space translation
+        let T = rs.t
 
-        let fx = frame.intrinsics.fx
-        let fy = frame.intrinsics.fy
-        let cx = frame.intrinsics.cx
-        let cy = frame.intrinsics.cy
+        // Axis length in view-space points
+        let axisLen: CGFloat = 40
 
-        let origin = CGPoint(
-            x: CGFloat(fx * X / Z + cx),
-            y: CGFloat(fy * Y / Z + cy)
-        )
+        // Origin
+        let originPx = CGPoint(x: CGFloat(T.x), y: CGFloat(T.y))
+        let origin = mapper.mapCGPoint(originPx)
+
+        // Unit axis endpoints (pixel space)
+        let xEndPx = CGPoint(x: CGFloat(T.x + 1), y: CGFloat(T.y))
+        let yEndPx = CGPoint(x: CGFloat(T.x),     y: CGFloat(T.y + 1))
+
+        let xEnd = mapper.mapCGPoint(xEndPx)
+        let yEnd = mapper.mapCGPoint(yEndPx)
 
         ctx.setLineWidth(2)
 
-        // X axis (red)
+        // ---- X axis (red) ----
         ctx.setStrokeColor(UIColor.red.cgColor)
+        ctx.beginPath()
         ctx.move(to: origin)
-        ctx.addLine(to: CGPoint(x: origin.x + 40, y: origin.y))
+        ctx.addLine(to: CGPoint(
+            x: origin.x + (xEnd.x - origin.x) * axisLen,
+            y: origin.y + (xEnd.y - origin.y) * axisLen
+        ))
         ctx.strokePath()
 
-        // Y axis (green)
+        // ---- Y axis (green) ----
         ctx.setStrokeColor(UIColor.green.cgColor)
+        ctx.beginPath()
         ctx.move(to: origin)
-        ctx.addLine(to: CGPoint(x: origin.x, y: origin.y + 40))
+        ctx.addLine(to: CGPoint(
+            x: origin.x + (yEnd.x - origin.x) * axisLen,
+            y: origin.y + (yEnd.y - origin.y) * axisLen
+        ))
         ctx.strokePath()
     }
 }

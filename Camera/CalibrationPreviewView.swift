@@ -5,18 +5,18 @@
 
 import SwiftUI
 import AVFoundation
-import UIKit
 
 struct CalibrationPreviewView: UIViewRepresentable {
 
-    @ObservedObject var controller: RSTimingCalibrationController
     @EnvironmentObject var camera: CameraManager
 
-    func makeUIView(context: Context) -> CalibrationPreviewContainer {
-        CalibrationPreviewContainer(controller: controller, camera: camera)
+    func makeUIView(context: Context) -> PreviewView {
+        let view = PreviewView(session: camera.cameraSession)
+        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        return view
     }
 
-    func updateUIView(_ uiView: CalibrationPreviewContainer, context: Context) {
-        uiView.updateOverlay()
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.session = camera.cameraSession
     }
 }

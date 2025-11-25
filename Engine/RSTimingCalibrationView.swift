@@ -13,20 +13,29 @@ struct RSTimingCalibrationView: View {
     var body: some View {
         VStack(spacing: 16) {
 
+            // ----------------------------------------------------
+            // MARK: Start / Stop Row
+            // ----------------------------------------------------
             HStack(spacing: 16) {
-                Button(action: controller.start) {
-                    Text("Start")
-                        .frame(maxWidth: .infinity)
+
+                // START
+                Button("Start") {
+                    controller.start()
                 }
+                .frame(maxWidth: .infinity)
                 .buttonStyle(.borderedProminent)
 
-                Button(action: controller.stop) {
-                    Text("Stop")
-                        .frame(maxWidth: .infinity)
+                // STOP
+                Button("Stop") {
+                    controller.stop()
                 }
+                .frame(maxWidth: .infinity)
                 .buttonStyle(.bordered)
             }
 
+            // ----------------------------------------------------
+            // MARK: Fit / Save / Load
+            // ----------------------------------------------------
             Button("Fit Model") {
                 controller.fitModel(height: 1080)
             }
@@ -44,11 +53,15 @@ struct RSTimingCalibrationView: View {
 
             Divider()
 
+            // ----------------------------------------------------
+            // MARK: Diagnostic Output
+            // ----------------------------------------------------
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Samples: \(controller.samples.count)")
-                    Text("Curve points: \(controller.curve.count)")
-                    Text(String(format: "Readout: %.4f s", controller.readout))
+                    Text("Samples: \(controller.sampleCount)")
+                    Text(String(format: "Readout: %.4f s", controller.estimatedReadout))
+                    Text(String(format: "Linearity: %.3f", controller.estimatedLinearity))
+                    Text("Completed: \(controller.isComplete ? "Yes" : "No")")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()

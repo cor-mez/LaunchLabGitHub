@@ -260,7 +260,55 @@ public struct SpinDriftMetrics: Sendable {
         self.stability = stability
     }
 }
+// ============================================================
+// MARK: - Calibration Result
+// ============================================================
 
+/// Heavy-calibration output used internally by VisionPipeline.
+/// This struct contains all estimated alignment and world-frame
+/// transforms needed for pose correction, tilt correction, and
+/// world-origin alignment.
+///
+/// NOTE:
+/// - Not stored in VisionFrameData.
+/// - Not persisted across launches unless you decide later.
+/// - Used only by AutoCalibration + TiltCorrection.
+public struct CalibrationResult: Sendable {
+
+    /// Camera roll angle (radians)
+    public let roll: Float
+
+    /// Camera pitch angle (radians)
+    public let pitch: Float
+
+    /// Yaw offset between camera frame and target line (radians)
+    public let yawOffset: Float
+
+    /// Estimated distance from camera to tee (meters)
+    public let cameraToTeeDistance: Float
+
+    /// Estimated launch origin in camera coordinates
+    public let launchOrigin: SIMD3<Float>
+
+    /// World-frame alignment rotation matrix
+    public let worldAlignmentR: simd_float3x3
+
+    public init(
+        roll: Float,
+        pitch: Float,
+        yawOffset: Float,
+        cameraToTeeDistance: Float,
+        launchOrigin: SIMD3<Float>,
+        worldAlignmentR: simd_float3x3
+    ) {
+        self.roll = roll
+        self.pitch = pitch
+        self.yawOffset = yawOffset
+        self.cameraToTeeDistance = cameraToTeeDistance
+        self.launchOrigin = launchOrigin
+        self.worldAlignmentR = worldAlignmentR
+    }
+}
 // ============================================================
 // MARK: - Vision Frame Data
 // ============================================================

@@ -1,7 +1,4 @@
-//
-//  RSTimingCalibrationOverlay.swift
-//  LaunchLab
-//
+// File: Vision/Overlays/RSTimingCalibrationOverlay.swift
 
 import UIKit
 import QuartzCore
@@ -41,13 +38,13 @@ final class RSTimingCalibrationOverlay: CALayer {
         ctx.clear(bounds)
 
         guard !samples.isEmpty else {
-            drawHUD(ctx)
+            // HUD text removed to avoid UIKit text drawing in CALayer.
             return
         }
 
         drawSamples(ctx)
         drawCurvePlot(ctx)
-        drawHUD(ctx)
+        // No HUD text drawing here.
     }
 
     private func drawSamples(_ ctx: CGContext) {
@@ -80,8 +77,10 @@ final class RSTimingCalibrationOverlay: CALayer {
         let step = bounds.width / CGFloat(max(1, n - 1))
 
         ctx.beginPath()
-        ctx.move(to: CGPoint(x: 0,
-                             y: CGFloat(1 - curve[0]) * bounds.height))
+        ctx.move(to: CGPoint(
+            x: 0,
+            y: CGFloat(1 - curve[0]) * bounds.height
+        ))
 
         for i in 1..<n {
             let x = CGFloat(i) * step
@@ -90,21 +89,5 @@ final class RSTimingCalibrationOverlay: CALayer {
         }
 
         ctx.strokePath()
-    }
-
-    private func drawHUD(_ ctx: CGContext) {
-        let text = "Samples: \(samples.count)  Readout: \(String(format: "%.4f", readout))s"
-        let attr: [NSAttributedString.Key : Any] = [
-            .font: UIFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: UIColor.white
-        ]
-
-        let str = NSAttributedString(string: text, attributes: attr)
-        let size = str.size()
-        let rect = CGRect(x: 8, y: 8, width: size.width, height: size.height)
-
-        UIGraphicsPushContext(ctx)
-        str.draw(in: rect)
-        UIGraphicsPopContext()
     }
 }

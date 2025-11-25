@@ -4,27 +4,23 @@
 //
 
 import SwiftUI
-import Combine
 
-/// Complete SwiftUI flow for Auto-Calibration v1.
-/// Runs outside VisionPipeline and is started manually by the user.
-/// Captures ~120 frames, runs calibration, displays results, then persists.
 public struct CalibrationFlowView: View {
 
     @EnvironmentObject private var camera: CameraManager
 
     @State private var phase: Phase = .idle
     @State private var progress: CGFloat = 0
-    @State private var collectedFrames: [VisionFrameData] = []
-    @State private var calibration: CalibrationResult? = nil
+    @State private var frames: [VisionFrameData] = []
+    @State private var result: CalibrationResult? = nil
 
     @State private var timer: Timer?
 
     public init() {}
 
-    // ============================================================
+    // ------------------------------------------------------------
     // MARK: - Body
-    // ============================================================
+    // ------------------------------------------------------------
     public var body: some View {
         VStack(spacing: 24) {
 
@@ -39,42 +35,27 @@ public struct CalibrationFlowView: View {
 
             switch phase {
             case .idle:
-                Button(action: startCollection) {
-                    Text("Start Calibration")
-                        .font(.title3).bold()
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.blue.opacity(0.9))
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-                .padding(.horizontal)
+                Button("Start Calibration", action: start)
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal)
 
             case .collecting:
-                Text("Move the ball slightly to gather sample data.\nKeep the camera completely still.")
+                Text("Move the ball slightly.\nKeep the camera still.")
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
             case .processing:
-                Text("Analyzing frames…")
+                Text("Analyzing…")
                     .font(.headline)
-                    .padding(.horizontal)
 
             case .complete:
-                if let result = calibration {
-                    resultSummary(result)
+                if let r = result {
+                    resultSummary(r)
                         .padding(.horizontal)
 
-                    Button(action: finish) {
-                        Text("Done")
-                            .font(.title3).bold()
-                            .padding()
-                            .frame(maxWidth: .infinity)
-                            .background(Color.green.opacity(0.9))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                    }
-                    .padding(.horizontal)
+                    Button("Done", action: finish)
+                        .buttonStyle(.borderedProminent)
+                        .padding(.horizontal)
                 }
             }
         }
@@ -82,9 +63,9 @@ public struct CalibrationFlowView: View {
         .onDisappear { timer?.invalidate() }
     }
 
-    // ============================================================
-    // MARK: - Progress View
-    // ============================================================
+    // ------------------------------------------------------------
+    // MARK: - Progress UI
+    // ------------------------------------------------------------
     private var progressView: some View {
         VStack {
             ZStack(alignment: .leading) {
@@ -109,112 +90,79 @@ public struct CalibrationFlowView: View {
 
     private var progressLabel: String {
         switch phase {
-        case .idle:        return "Ready"
-        case .collecting:  return "Collecting Frames"
-        case .processing:  return "Calibrating"
-        case .complete:    return "Complete"
+        case .idle:        "Ready"
+        case .collecting:  "Collecting Frames"
+        case .processing:  "Calibrating"
+        case .complete:    "Complete"
         }
     }
 
-    // ============================================================
-    // MARK: - Summary UI
-    // ============================================================
-    @ViewBuilder
+    // ------------------------------------------------------------
+    // MARK: - Summary UI (Canonical CalibrationResult Only)
+    // ------------------------------------------------------------
     private func resultSummary(_ r: CalibrationResult) -> some View {
         VStack(alignment: .leading, spacing: 8) {
 
             Group {
-                Text("📸 Intrinsics")
-                Text("  fx = \(format(r.fx))")
-                Text("  fy = \(format(r.fy))")
-                Text("  cx = \(format(r.cx))")
-                Text("  cy = \(format(r.cy))")
-                Text("  refined = \(r.intrinsicsRefined ? "YES" : "NO")")
-            }
-
-            Group {
                 Text("📐 Camera Tilt")
-                Text("  pitch = \(degrees(r.pitch))°")
-                Text("  roll  = \(degrees(r.roll))°")
+                Text("  roll  = \(deg(r.roll))°")
+                Text("  pitch = \(deg(r.pitch))°")
+                Text("  yaw   = \(deg(r.yawOffset))°")
             }
 
             Group {
-                Text("📏 Ball Distance")
-                Text("  depth = \(format3(r.ballDistance)) m")
+                Text("📏 Camera → Tee")
+                Text("  distance = \(fmt(r.cameraToTeeDistance)) m")
             }
 
             Group {
-                Text("💡 Lighting")
-                Text("  gain = \(format3(r.lightingGain))")
+                Text("📍 Launch Origin (camera frame)")
+                Text("  [\(fmt(r.launchOrigin.x)), \(fmt(r.launchOrigin.y)), \(fmt(r.launchOrigin.z))]")
             }
 
             Group {
-                Text("📦 Camera Offset")
-                Text("  translation = \(vec3(r.translationOffset))")
-            }
-
-            Group {
-                Text("🧪 Stability")
-                Text("  RPE rms = \(format3(r.avgRPERMS))")
-                Text("  spin drift = \(format3(r.avgSpinDrift))°")
-                Text("  stable = \(r.isStable ? "YES" : "NO")")
-            }
-
-            Group {
-                Text("📚 RS Timing")
-                Text("  readout = \(format6(r.rsReadoutTime)) s")
-                Text("  linearity = \(format3(r.rsLinearity))")
+                Text("🌎 World Alignment Matrix")
+                ForEach(0..<3, id: \.self) { row in
+                    Text("  [\(fmt(r.worldAlignmentR[row,0])), \(fmt(r.worldAlignmentR[row,1])), \(fmt(r.worldAlignmentR[row,2]))]")
+                }
             }
         }
         .font(.system(.body, design: .monospaced))
     }
 
-    private func format(_ x: Float) -> String { String(format: "%.2f", x) }
-    private func format3(_ x: Float) -> String { String(format: "%.3f", x) }
-    private func format6(_ x: Float) -> String { String(format: "%.6f", x) }
+    private func fmt(_ x: Float) -> String { String(format: "%.3f", x) }
+    private func deg(_ r: Float) -> String { String(format: "%.2f", r * 180 / .pi) }
 
-    private func degrees(_ r: Float) -> String {
-        String(format: "%.2f", r * 180 / .pi)
-    }
-
-    private func vec3(_ v: SIMD3<Float>) -> String {
-        String(format: "[%.3f %.3f %.3f]", v.x, v.y, v.z)
-    }
-
-    // ============================================================
-    // MARK: - Phase Control
-    // ============================================================
-    private func startCollection() {
-
+    // ------------------------------------------------------------
+    // MARK: - Flow Control
+    // ------------------------------------------------------------
+    private func start() {
         phase = .collecting
         progress = 0
-        collectedFrames.removeAll()
+        frames.removeAll()
 
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
-
             if let f = camera.latestFrame {
-                collectedFrames.append(f)
+                frames.append(f)
             }
 
-            // Progress
-            progress = min(1.0, CGFloat(collectedFrames.count) / 120.0)
+            progress = min(1.0, CGFloat(frames.count) / 120.0)
 
-            // Gather 120 frames
-            if collectedFrames.count >= 120 {
+            if frames.count >= 120 {
                 timer?.invalidate()
-                beginProcessing()
+                process()
             }
         }
     }
 
-    private func beginProcessing() {
+    private func process() {
         phase = .processing
         progress = 0.5
 
-        AutoCalibration.shared.runCalibration(frames: collectedFrames) { result in
+        AutoCalibration.shared.runCalibration(frames: frames) { r in
             DispatchQueue.main.async {
-                self.calibration = result
+                self.result = r
                 self.phase = .complete
                 self.progress = 1.0
             }
@@ -224,29 +172,23 @@ public struct CalibrationFlowView: View {
     private func finish() {
         phase = .idle
         progress = 0
-        collectedFrames.removeAll()
-        calibration = nil
+        frames.removeAll()
+        result = nil
     }
 
-    // ============================================================
-    // MARK: - Phase Enum
-    // ============================================================
+    // ------------------------------------------------------------
+    // MARK: - Enum
+    // ------------------------------------------------------------
     private enum Phase {
-        case idle
-        case collecting
-        case processing
-        case complete
+        case idle, collecting, processing, complete
     }
 
-    // ============================================================
-    // MARK: - Title Helpers
-    // ============================================================
     private func title(for p: Phase) -> String {
         switch p {
-        case .idle:        return "Calibration"
-        case .collecting:  return "Collecting Data"
-        case .processing:  return "Processing"
-        case .complete:    return "Complete"
+        case .idle:        "Calibration"
+        case .collecting:  "Collecting Data"
+        case .processing:  "Processing"
+        case .complete:    "Complete"
         }
     }
 }

@@ -5,30 +5,25 @@
 
 import UIKit
 
-final class DotOverlayLayer: CALayer {
+final class DotOverlayLayer: BaseOverlayLayer {
 
-    weak var camera: CameraManager?
+    private var dots: [VisionDot] = []
 
-    override func draw(in ctx: CGContext) {
-        guard let camera else { return }
+    override func updateWithFrame(_ frame: VisionFrameData) {
+        self.dots = frame.dots
+    }
 
-        let frame = MainActor.assumeIsolated {
-            camera.latestFrame
-        }
+    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+        ctx.setLineWidth(2.0)
+        ctx.setStrokeColor(UIColor.systemYellow.cgColor)
 
-        guard let frame else { return }
-        ctx.setFillColor(UIColor.red.cgColor)
+        for d in dots {
+            let p = mapper.mapCGPoint(CGPoint(x: CGFloat(d.position.x),
+                                              y: CGFloat(d.position.y)))
 
-        for dot in frame.dots {
-            let p = dot.position
             let r: CGFloat = 4
-
-            ctx.fillEllipse(in: CGRect(
-                x: p.x - r,
-                y: p.y - r,
-                width: r * 2,
-                height: r * 2
-            ))
+            let rect = CGRect(x: p.x - r, y: p.y - r, width: r*2, height: r*2)
+            ctx.strokeEllipse(in: rect)
         }
     }
 }

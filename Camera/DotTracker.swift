@@ -2,69 +2,153 @@
 //  DotTracker.swift
 //  LaunchLab
 //
+//  Nearest-neighbor dot ID association.
+//  - Preserves stable VisionDot.id values across frames
+//  - Does NOT write velocity (VelocityTracker owns that)
+//  - Returns updated DotTrackingState
+//
 
+import Foundation
 import CoreGraphics
 
 final class DotTracker {
 
-    private let gate: CGFloat = 12.0
+    // Maximum distance (in pixels) to consider a detection
+    // the same dot as a previous one.
+    private let maxMatchDistance: CGFloat = 30.0
+    private lazy var maxMatchDistanceSq: CGFloat = maxMatchDistance * maxMatchDistance
 
-    func track(prev: [VisionDot], currPoints: [CGPoint]) -> [VisionDot] {
+    // Next ID to give to a brand new dot.
+    private var nextID: Int = 0
 
-        guard !prev.isEmpty, !currPoints.isEmpty else {
-            return currPoints.enumerated().map { (i, p) in
-                VisionDot(id: i, position: p)
-            }
+    // Optional external reset if you ever need to hard-reset IDs.
+    func reset() {
+        nextID = 0
+    }
+
+    // ---------------------------------------------------------------------
+    // MARK: - Track
+    // ---------------------------------------------------------------------
+    /// Associate raw detection points with previous VisionDots.
+    ///
+    /// - Parameters:
+    ///   - detections: raw 2D points from DotDetector (full-res pixel coords)
+    ///   - previousDots: the dots from the previous frame
+    ///   - previousState: previous tracking state
+    ///
+    /// - Returns:
+    ///   - updatedDots: VisionDots with stable IDs (velocity = nil here)
+    ///   - state: updated DotTrackingState
+    ///
+    func track(
+        detections: [CGPoint],
+        previousDots: [VisionDot],
+        previousState: DotTrackingState
+    ) -> ([VisionDot], DotTrackingState) {
+
+        // No detections: we lost the pattern this frame.
+        if detections.isEmpty {
+            return ([], .lost)
         }
 
-        var unused = currPoints
-        var out: [VisionDot] = []
+        // If no previous dots, bootstrap IDs.
+        if previousDots.isEmpty {
+            var result: [VisionDot] = []
+            result.reserveCapacity(detections.count)
 
-        for dot in prev {
+            for p in detections {
+                let dot = VisionDot(
+                    id: nextID,
+                    position: p,
+                    predicted: nil,
+                    velocity: nil          // VelocityTracker will fill later
+                )
+                result.append(dot)
+                nextID += 1
+            }
 
-            // Predicted from KF-enhanced velocity
-            let predicted = dot.predicted ?? dot.position
+            // First frame with detections → "initial"
+            return (result, .initial)
+        }
 
-            // Find nearest neighbor
-            var bestIdx: Int?
-            var bestDist = CGFloat.greatestFiniteMagnitude
+        // --------------------------------------------------------------
+        // Nearest-neighbor association
+        // --------------------------------------------------------------
+        var updated: [VisionDot] = []
+        updated.reserveCapacity(detections.count)
 
-            for (i, p) in unused.enumerated() {
-                let dx = p.x - predicted.x
-                let dy = p.y - predicted.y
-                let d = dx*dx + dy*dy
-                if d < bestDist {
-                    bestDist = d
-                    bestIdx = i
+        var usedDetection = [Bool](repeating: false, count: detections.count)
+        var matchedCount = 0
+
+        // Match each previous dot to the nearest unused detection.
+        for prev in previousDots {
+
+            var bestIndex: Int? = nil
+            var bestDistSq: CGFloat = .greatestFiniteMagnitude
+
+            for (j, det) in detections.enumerated() where !usedDetection[j] {
+                let dx = det.x - prev.position.x
+                let dy = det.y - prev.position.y
+                let d2 = dx*dx + dy*dy
+
+                if d2 < bestDistSq {
+                    bestDistSq = d2
+                    bestIndex = j
                 }
             }
 
-            if let idx = bestIdx, sqrt(bestDist) <= gate {
-                let pos = unused.remove(at: idx)
-                out.append(
-                    VisionDot(
-                        id: dot.id,
-                        position: pos,
-                        predicted: predicted,
-                        velocity: dot.velocity
-                    )
+            if let idx = bestIndex, bestDistSq <= maxMatchDistanceSq {
+                // Matched: keep same ID, velocity left nil for VelocityTracker
+                let det = detections[idx]
+
+                let dot = VisionDot(
+                    id: prev.id,
+                    position: det,
+                    predicted: nil,
+                    velocity: nil      // VelocityTracker owns velocity
                 )
+
+                updated.append(dot)
+                usedDetection[idx] = true
+                matchedCount += 1
+
+            } else {
+                // No match within radius → drop this previous dot for now.
+                continue
             }
         }
 
-        // Add new IDs for unmatched points
-        let maxID = (prev.map { $0.id }.max() ?? -1)
-        for (j, p) in unused.enumerated() {
-            out.append(
-                VisionDot(
-                    id: maxID + 1 + j,
-                    position: p,
-                    predicted: p,
-                    velocity: .zero
-                )
+        // Create new dots for any unmatched detections.
+        for (idx, det) in detections.enumerated() where !usedDetection[idx] {
+            let dot = VisionDot(
+                id: nextID,
+                position: det,
+                predicted: nil,
+                velocity: nil
             )
+            updated.append(dot)
+            nextID += 1
         }
 
-        return out
+        // --------------------------------------------------------------
+        // Tracking state update
+        // --------------------------------------------------------------
+        let state: DotTrackingState
+
+        if matchedCount >= 4 {
+            state = .tracking
+        } else if matchedCount == 0 {
+            state = .lost
+        } else {
+            // Transitional case: some matches but weak
+            switch previousState {
+            case .tracking:
+                state = .tracking
+            case .initial, .lost:
+                state = .initial
+            }
+        }
+
+        return (updated, state)
     }
 }

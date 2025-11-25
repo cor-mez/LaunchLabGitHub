@@ -5,34 +5,53 @@
 
 import UIKit
 
-final class VelocityOverlayLayer: CALayer {
+final class VelocityOverlayLayer: BaseOverlayLayer {
 
-    weak var camera: CameraManager?
+    private struct Vec {
+        let p: CGPoint   // current position (buffer space)
+        let v: CGVector  // displacement per frame (buffer space)
+    }
 
-    override func draw(in ctx: CGContext) {
-        guard let camera else { return }
+    private var vectors: [Vec] = []
 
-        // MainActor hop to safely read @Published latestFrame
-        let frame = MainActor.assumeIsolated {
-            camera.latestFrame
+    override func updateWithFrame(_ frame: VisionFrameData) {
+        vectors.removeAll(keepingCapacity: true)
+
+        for d in frame.dots {
+            if let vel = d.velocity {
+                vectors.append(Vec(p: d.position, v: vel))
+            }
         }
+    }
 
-        guard let frame else { return }
+    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+        guard !vectors.isEmpty else { return }
 
-        ctx.setLineWidth(2)
-        ctx.setStrokeColor(UIColor.cyan.cgColor)
+        ctx.setLineWidth(2.0)
+        ctx.setStrokeColor(UIColor.systemCyan.cgColor)
 
-        for dot in frame.dots {
-            guard let v = dot.velocity else { continue }
+        // Bigger scale so arrows are clearly visible
+        let scale: CGFloat = 5.0
+        let minLenSq: CGFloat = 0.5 * 0.5   // ignore tiny jiggles
 
-            let p = dot.position
-            let end = CGPoint(
-                x: p.x + CGFloat(v.dx) * 0.5,
-                y: p.y + CGFloat(v.dy) * 0.5
+        for item in vectors {
+
+            let dx = item.v.dx
+            let dy = item.v.dy
+            let lenSq = dx*dx + dy*dy
+            if lenSq < minLenSq { continue }
+
+            // endpoint in BUFFER space
+            let endBuffer = CGPoint(
+                x: item.p.x + dx * scale,
+                y: item.p.y + dy * scale
             )
 
-            ctx.move(to: p)
-            ctx.addLine(to: end)
+            let startView = mapper.mapCGPoint(item.p)
+            let endView   = mapper.mapCGPoint(endBuffer)
+
+            ctx.move(to: startView)
+            ctx.addLine(to: endView)
             ctx.strokePath()
         }
     }
