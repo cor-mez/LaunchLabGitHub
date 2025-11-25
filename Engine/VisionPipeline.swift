@@ -309,203 +309,203 @@ final class VisionPipeline {
         return finalFrame
     }
 
-    // MARK: - BallLock + RS-gating stage (internal)
+    // File: Engine/VisionPipeline.swift
+// ⬇️ Replace the entire runBallLockStage(...) method with this version.
 
-    private func runBallLockStage(
-        refinedDots: [VisionDot],
-        imageSize: CGSize,
-        searchRoiCenter: CGPoint,
-        searchRoiRadius: CGFloat,
-        rsInput: RSDegeneracyInput,
-        principalPoint: CGPoint,
-        baseFrameData: VisionFrameData,
-        dt: Double,
-        frameIndex: Int
-    ) -> VisionFrameData {
+private func runBallLockStage(
+    refinedDots: [VisionDot],
+    imageSize: CGSize,
+    searchRoiCenter: CGPoint,
+    searchRoiRadius: CGFloat,
+    rsInput: RSDegeneracyInput,
+    principalPoint: CGPoint,
+    baseFrameData: VisionFrameData,
+    dt: Double,
+    frameIndex: Int
+) -> VisionFrameData {
 
-        let cfg = ballLockConfig
+    let cfg = ballLockConfig
 
-        // Build classifier params from config
-        let params = BallClusterParams(
-            minCorners: cfg.minCorners,
-            maxCorners: cfg.maxCorners,
-            minRadiusPx: CGFloat(cfg.minRadiusPx),
-            maxRadiusPx: CGFloat(cfg.maxRadiusPx),
-            idealRadiusMinPx: 20.0,
-            idealRadiusMaxPx: 60.0,
-            roiBorderMarginPx: 10.0,
-            symmetryScale: 1.5,
-            symmetryWeight: CGFloat(cfg.symmetryWeight),
-            countWeight: CGFloat(cfg.countWeight),
-            radiusWeight: CGFloat(cfg.radiusWeight)
-        )
+    // Build classifier params from config
+    let params = BallClusterParams(
+        minCorners: cfg.minCorners,
+        maxCorners: cfg.maxCorners,
+        minRadiusPx: CGFloat(cfg.minRadiusPx),
+        maxRadiusPx: CGFloat(cfg.maxRadiusPx),
+        idealRadiusMinPx: 20.0,
+        idealRadiusMaxPx: 60.0,
+        roiBorderMarginPx: 10.0,
+        symmetryWeight: CGFloat(cfg.symmetryWeight),
+        countWeight: CGFloat(cfg.countWeight),
+        radiusWeight: CGFloat(cfg.radiusWeight)
+    )
 
-        // Use LK-refined positions for clustering.
-        var positions: [CGPoint] = []
-        positions.reserveCapacity(refinedDots.count)
-        for d in refinedDots {
-            positions.append(d.position)
-        }
-
-        // 1) Ball cluster classification inside search ROI using refined LK dots.
-        let cluster = ballClusterClassifier.classify(
-            dots: positions,
-            imageSize: imageSize,
-            roiCenter: searchRoiCenter,
-            roiRadius: searchRoiRadius,
-            params: params
-        )
-
-        // Only clusters above minQualityToEnterLock are allowed to drive BallLock.
-        let clusterForLock: BallCluster?
-        if let c = cluster,
-           c.qualityScore >= CGFloat(cfg.minQualityToEnterLock) {
-            clusterForLock = c
-        } else {
-            clusterForLock = nil
-        }
-
-        // 2) Ball lock state update.
-        let lockOutput = ballLockStateMachine.update(
-            cluster: clusterForLock,
-            dt: dt,
-            frameIndex: frameIndex,
-            searchRoiCenter: searchRoiCenter,
-            searchRoiRadius: searchRoiRadius,
-            qLock: CGFloat(cfg.qLock),
-            qStay: CGFloat(cfg.qStay),
-            lockAfterN: cfg.lockAfterN,
-            unlockAfterM: cfg.unlockAfterM,
-            alphaCenter: CGFloat(cfg.alphaCenter),
-            roiRadiusFactor: CGFloat(cfg.roiRadiusFactor),
-            loggingEnabled: cfg.showBallLockLogging
-        )
-
-        // 3) RS-degeneracy checks (before heavy RS-PnP).
-        let rsResult = evaluateRSDegeneracy(
-            input: rsInput,
-            ballCentroid: cluster?.centroid,
-            principalPoint: principalPoint
-        )
-
-        // 4) Trajectory frame window — require 3 consecutive locked frames.
-        if lockOutput.isLocked {
-            if lockedRunLength < Int.max {
-                lockedRunLength += 1
-            }
-        } else {
-            lockedRunLength = 0
-        }
-        let inLockedWindow = lockedRunLength >= 3
-
-        // 5) Filter VisionDots by locked ROI when locked; empty array when not locked.
-        let allDots = baseFrameData.dots
-        var filteredDots: [VisionDot] = []
-
-        if lockOutput.isLocked,
-           let roiCenter = lockOutput.roiCenter,
-           let roiRadius = lockOutput.roiRadius {
-            let radiusSq = roiRadius * roiRadius
-            filteredDots.reserveCapacity(allDots.count)
-            for dot in allDots {
-                let dx = dot.position.x - roiCenter.x
-                let dy = dot.position.y - roiCenter.y
-                if dx * dx + dy * dy <= radiusSq {
-                    filteredDots.append(dot)
-                }
-            }
-        } else {
-            filteredDots = []
-        }
-
-        // 6) Gating for heavy RS-PnP / Spin.
-        let allowHeavySolvers =
-            lockOutput.isLocked &&
-            lockOutput.quality >= CGFloat(cfg.qLock) &&
-            rsResult.rsConfidence >= 0.60 &&
-            !rsResult.flags.hasCritical &&
-            inLockedWindow
-
-        // Gate existing heavy-solver outputs (if any) from upstream.
-        let gatedRspnp: RSPnPResult?          = allowHeavySolvers ? baseFrameData.rspnp : nil
-        let gatedSpin: SpinResult?            = allowHeavySolvers ? baseFrameData.spin : nil
-        let gatedSpinDrift: SpinDriftMetrics? = allowHeavySolvers ? baseFrameData.spinDrift : nil
-
-        // 7) BallLock residuals for debug overlay.
-        var residuals: [RPEResidual] = baseFrameData.residuals ?? []
-
-        if let roiCenter = lockOutput.roiCenter,
-           let roiRadius = lockOutput.roiRadius {
-            let roiResidual = RPEResidual(
-                id: 100,
-                error: SIMD2<Float>(
-                    Float(roiCenter.x),
-                    Float(roiCenter.y)
-                ),
-                weight: Float(roiRadius)
-            )
-            residuals.append(roiResidual)
-        }
-
-        let qualityResidual = RPEResidual(
-            id: 101,
-            error: SIMD2<Float>(
-                Float(lockOutput.quality),
-                Float(lockOutput.stateCode)
-            ),
-            weight: Float(rsResult.rsConfidence)
-        )
-        residuals.append(qualityResidual)
-
-        // Cluster metrics residual (symmetry, radius, count)
-        if let c = cluster {
-            let metricsResidual = RPEResidual(
-                id: 102,
-                error: SIMD2<Float>(
-                    Float(c.symmetryScore),
-                    Float(c.radiusPx)
-                ),
-                weight: Float(c.count)
-            )
-            residuals.append(metricsResidual)
-
-            // Optional eccentricity residual for future HUD/overlay tuning.
-            let eccResidual = RPEResidual(
-                id: 103,
-                error: SIMD2<Float>(
-                    Float(c.eccentricity),
-                    0
-                ),
-                weight: 1
-            )
-            residuals.append(eccResidual)
-        }
-
-        // 8) Build new immutable VisionFrameData.
-        let newFrame = VisionFrameData(
-            timestamp: baseFrameData.timestamp,
-            pixelBuffer: baseFrameData.pixelBuffer,
-            width: baseFrameData.width,
-            height: baseFrameData.height,
-            intrinsics: baseFrameData.intrinsics,
-            dots: filteredDots,
-            trackingState: baseFrameData.trackingState,
-            bearings: baseFrameData.bearings,
-            correctedPoints: baseFrameData.correctedPoints,
-            rspnp: gatedRspnp,
-            spin: gatedSpin,
-            spinDrift: gatedSpinDrift,
-            residuals: residuals,
-            flowVectors: baseFrameData.flowVectors
-        )
-
-        // 9) AutoCalibration: only locked frames with valid PnP.
-        if allowHeavySolvers, newFrame.rspnp != nil {
-            feedAutoCalibration(with: newFrame)
-        }
-
-        return newFrame
+    // Use LK-refined positions for clustering.
+    var positions: [CGPoint] = []
+    positions.reserveCapacity(refinedDots.count)
+    for d in refinedDots {
+        positions.append(d.position)
     }
+
+    // 1) Ball cluster classification inside search ROI using refined LK dots.
+    let cluster = ballClusterClassifier.classify(
+        dots: positions,
+        imageSize: imageSize,
+        roiCenter: searchRoiCenter,
+        roiRadius: searchRoiRadius,
+        params: params
+    )
+
+    // Only clusters above minQualityToEnterLock are allowed to drive BallLock.
+    let clusterForLock: BallCluster?
+    if let c = cluster,
+       c.qualityScore >= CGFloat(cfg.minQualityToEnterLock) {
+        clusterForLock = c
+    } else {
+        clusterForLock = nil
+    }
+
+    // 2) Ball lock state update.
+    let lockOutput = ballLockStateMachine.update(
+        cluster: clusterForLock,
+        dt: dt,
+        frameIndex: frameIndex,
+        searchRoiCenter: searchRoiCenter,
+        searchRoiRadius: searchRoiRadius,
+        qLock: CGFloat(cfg.qLock),
+        qStay: CGFloat(cfg.qStay),
+        lockAfterN: cfg.lockAfterN,
+        unlockAfterM: cfg.unlockAfterM,
+        alphaCenter: CGFloat(cfg.alphaCenter),
+        roiRadiusFactor: CGFloat(cfg.roiRadiusFactor)
+    )
+
+    // 3) RS-degeneracy checks (before heavy RS-PnP).
+    let rsResult = evaluateRSDegeneracy(
+        input: rsInput,
+        ballCentroid: cluster?.centroid,
+        principalPoint: principalPoint
+    )
+
+    // 4) Trajectory frame window -- require 3 consecutive locked frames.
+    if lockOutput.isLocked {
+        if lockedRunLength < Int.max {
+            lockedRunLength += 1
+        }
+    } else {
+        lockedRunLength = 0
+    }
+    let inLockedWindow = lockedRunLength >= 3
+
+    // 5) Filter VisionDots by locked ROI when locked; empty array when not locked.
+    let allDots = baseFrameData.dots
+    var filteredDots: [VisionDot] = []
+
+    if lockOutput.isLocked,
+       let roiCenter = lockOutput.roiCenter,
+       let roiRadius = lockOutput.roiRadius {
+        let radiusSq = roiRadius * roiRadius
+        filteredDots.reserveCapacity(allDots.count)
+        for dot in allDots {
+            let dx = dot.position.x - roiCenter.x
+            let dy = dot.position.y - roiCenter.y
+            if dx * dx + dy * dy <= radiusSq {
+                filteredDots.append(dot)
+            }
+        }
+    } else {
+        filteredDots = []
+    }
+
+    // 6) Gating for heavy RS-PnP / Spin.
+    let allowHeavySolvers =
+        lockOutput.isLocked &&
+        lockOutput.quality >= CGFloat(cfg.qLock) &&
+        rsResult.rsConfidence >= 0.60 &&
+        !rsResult.flags.hasCritical &&
+        inLockedWindow
+
+    // Gate existing heavy-solver outputs (if any) from upstream.
+    let gatedRspnp: RSPnPResult?          = allowHeavySolvers ? baseFrameData.rspnp : nil
+    let gatedSpin: SpinResult?            = allowHeavySolvers ? baseFrameData.spin : nil
+    let gatedSpinDrift: SpinDriftMetrics? = allowHeavySolvers ? baseFrameData.spinDrift : nil
+
+    // 7) BallLock residuals for debug overlay.
+    var residuals: [RPEResidual] = baseFrameData.residuals ?? []
+
+    if let roiCenter = lockOutput.roiCenter,
+       let roiRadius = lockOutput.roiRadius {
+        let roiResidual = RPEResidual(
+            id: 100,
+            error: SIMD2<Float>(
+                Float(roiCenter.x),
+                Float(roiCenter.y)
+            ),
+            weight: Float(roiRadius)
+        )
+        residuals.append(roiResidual)
+    }
+
+    let qualityResidual = RPEResidual(
+        id: 101,
+        error: SIMD2<Float>(
+            Float(lockOutput.quality),
+            Float(lockOutput.stateCode)
+        ),
+        weight: Float(rsResult.rsConfidence)
+    )
+    residuals.append(qualityResidual)
+
+    // Cluster metrics residuals
+    if let c = cluster {
+        // 102: raw cluster metrics (symmetry, radius, count)
+        let metricsResidual = RPEResidual(
+            id: 102,
+            error: SIMD2<Float>(
+                Float(c.symmetryScore),     // (normalized SYM 0–1)
+                Float(c.radiusPx)          // raw radius in px
+            ),
+            weight: Float(c.count)        // raw count
+        )
+        residuals.append(metricsResidual)
+
+        // 103: extra metrics -- countScore, radiusScore, eccentricity
+        let scoresResidual = RPEResidual(
+            id: 103,
+            error: SIMD2<Float>(
+                Float(c.countScore),       // normalized CNT 0–1
+                Float(c.radiusScore)       // normalized RAD 0–1
+            ),
+            weight: Float(c.eccentricity) // shape eccentricity
+        )
+        residuals.append(scoresResidual)
+    }
+
+    // 8) Build new immutable VisionFrameData.
+    let newFrame = VisionFrameData(
+        timestamp: baseFrameData.timestamp,
+        pixelBuffer: baseFrameData.pixelBuffer,
+        width: baseFrameData.width,
+        height: baseFrameData.height,
+        intrinsics: baseFrameData.intrinsics,
+        dots: filteredDots,
+        trackingState: baseFrameData.trackingState,
+        bearings: baseFrameData.bearings,
+        correctedPoints: baseFrameData.correctedPoints,
+        rspnp: gatedRspnp,
+        spin: gatedSpin,
+        spinDrift: gatedSpinDrift,
+        residuals: residuals,
+        flowVectors: baseFrameData.flowVectors
+    )
+
+    // 9) AutoCalibration: only locked frames with valid PnP.
+    if allowHeavySolvers, newFrame.rspnp != nil {
+        feedAutoCalibration(with: newFrame)
+    }
+
+    return newFrame
+}
 
     // MARK: - AutoCalibration hook
 

@@ -1,6 +1,5 @@
 // File: Vision/BallLock/BallLockConfig.swift
-// BallLockConfig — runtime-tunable parameters for BallCluster + BallLock.
-// Uses only local Swift types; no changes to VisionTypes.swift.
+// BallLockConfig -- runtime-tunable parameters for BallCluster + BallLock.
 
 import Foundation
 import Combine
@@ -30,10 +29,12 @@ final class BallLockConfig: ObservableObject {
 
     // MARK: - State Machine
 
+    /// Quality needed to accumulate "good" frames toward lock.
     @Published var qLock: Double = 0.55 {
         didSet { markNeedsResetForMajorChange(oldValue: oldValue, newValue: qLock) }
     }
 
+    /// Quality needed to stay in candidate/locked.
     @Published var qStay: Double = 0.40 {
         didSet { markNeedsResetForMajorChange(oldValue: oldValue, newValue: qStay) }
     }
@@ -43,15 +44,17 @@ final class BallLockConfig: ObservableObject {
 
     // MARK: - Smoothing / ROI
 
-    /// Centroid EMA factor — lower = smoother (less jitter).
+    /// Centroid EMA factor -- lower = smoother (less jitter).
+    /// Research corridor: ~0.15–0.20
     @Published var alphaCenter: Double = 0.20
 
-    /// Locked ROI radius factor, relative to cluster radius.
+    /// Locked ROI radius factor (× cluster radius).
+    /// Research corridor: ~1.2–1.3
     @Published var roiRadiusFactor: Double = 1.25
 
-    // MARK: - Quality Weights
+    // MARK: - Quality Weights (CNT / SYM / RAD)
 
-    /// Weights used in composite quality = wC * CNT + wS * SYM + wR * RAD (renormalized each frame).
+    /// Research defaults: 0.4 count, 0.4 symmetry, 0.2 radius.
     @Published var symmetryWeight: Double = 0.40
     @Published var countWeight: Double = 0.40
     @Published var radiusWeight: Double = 0.20

@@ -1,7 +1,5 @@
 // File: Vision/Overlays/BallLockDebugOverlayLayer.swift
-// BallLockDebugOverlayLayer v2 — topmost BallLock visualization overlay.
-// Reads BallLock data from RPEResiduals (IDs 100/101/102[/103]) and VisionFrameData.dots.
-// Uses BallLockConfig for toggles. No changes to VisionTypes.swift.
+// ⬇️ Replace the entire BallLockDebugOverlayLayer type with this version.
 
 import UIKit
 import QuartzCore
@@ -14,9 +12,15 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
     private var roiCenterBuffer: CGPoint?
     private var roiRadiusPx: CGFloat?
     private var quality: CGFloat = 0
-    private var symmetry: CGFloat = 0
-    private var count: Int = 0
-    private var radiusPx: CGFloat = 0
+
+    private var symmetry: CGFloat = 0      // normalized SYM 0–1
+    private var count: Int = 0             // raw CNT
+    private var radiusPx: CGFloat = 0      // raw RAD (px)
+
+    private var countScore: CGFloat = 0    // normalized CNT 0–1
+    private var radiusScore: CGFloat = 0   // normalized RAD 0–1
+    private var eccentricity: CGFloat = 0  // major/minor axis ratio
+
     private var stateCode: Int = 0
     private var confidence: CGFloat = 0
 
@@ -41,6 +45,9 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
         var newRadiusPx: CGFloat = 0
         var newStateCode: Int = 0
         var newConfidence: CGFloat = 0
+        var newCountScore: CGFloat = 0
+        var newRadiusScore: CGFloat = 0
+        var newEccentricity: CGFloat = 0
 
         // Cluster dots from VisionFrameData (ball-only when locked).
         clusterDots.removeAll(keepingCapacity: true)
@@ -70,6 +77,12 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
                 newRadiusPx = CGFloat(residual.error.y)
                 newCount = Int(residual.weight)
 
+            case 103:
+                // countScore / radiusScore / eccentricity
+                newCountScore = CGFloat(residual.error.x)
+                newRadiusScore = CGFloat(residual.error.y)
+                newEccentricity = CGFloat(residual.weight)
+
             default:
                 continue
             }
@@ -83,6 +96,9 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
         radiusPx = newRadiusPx
         stateCode = newStateCode
         confidence = newConfidence
+        countScore = newCountScore
+        radiusScore = newRadiusScore
+        eccentricity = newEccentricity
 
         if let c = newCenter {
             breadcrumb.append(c)
@@ -139,7 +155,7 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
         ctx.setStrokeColor(baseColor.cgColor)
         ctx.strokeEllipse(in: roiRect)
 
-        // Critical degeneracy (future) → red outline; for now approximate with low confidence.
+        // Critical degeneracy (approx): very low RS confidence → red outline.
         if confidence < 0.4 {
             let expandedRect = roiRect.insetBy(dx: -2.0, dy: -2.0)
             ctx.setLineWidth(3.0)
@@ -195,31 +211,42 @@ final class BallLockDebugOverlayLayer: BaseOverlayLayer {
             default: stateText = "UNK"
             }
 
+            // Clamp normalized scores for display
+            let cS = max(0, min(countScore, 1))
+            let rS = max(0, min(radiusScore, 1))
+
             let text = String(
-                format: "STATE: %@\nQ: %.2f\nSYM: %.2f\nCNT: %d\nRAD: %.0fpx",
+                format: """
+                STATE: %@  Q: %.2f
+                SYM: %.2f  CNT: %d  RAD: %.0f
+                cS: %.2f  rS: %.2f  ecc: %.2f
+                """,
                 stateText,
                 quality,
                 symmetry,
                 count,
-                radiusPx
+                radiusPx,
+                cS,
+                rS,
+                eccentricity
             )
 
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 2
 
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph
             ]
 
             let textOriginX = max(4.0, roiRect.minX)
-            let textOriginY = max(4.0, roiRect.minY - 70.0)
+            let textOriginY = max(4.0, roiRect.minY - 80.0)
             let textRect = CGRect(
                 x: textOriginX,
                 y: textOriginY,
-                width: 180.0,
-                height: 70.0
+                width: 200.0,
+                height: 80.0
             )
 
             UIGraphicsPushContext(ctx)
