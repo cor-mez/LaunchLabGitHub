@@ -18,7 +18,7 @@ final class PoseAxesOverlayLayer: BaseOverlayLayer {
         size = CGSize(width: frame.width, height: frame.height)
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let pose = pose, pose.isValid else { return }
 
         // Axes: unit vectors in camera frame

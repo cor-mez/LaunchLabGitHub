@@ -19,7 +19,7 @@ final class RSLineIndexOverlayLayer: BaseOverlayLayer {
         fatalError("init(coder:) not implemented")
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard rsIndex >= 0 else { return }
 
         let yView = mapper.mapRowToViewY(CGFloat(rsIndex))

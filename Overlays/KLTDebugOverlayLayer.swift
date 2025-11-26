@@ -15,7 +15,7 @@ final class KLTDebugOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         // KLT debug disabled — draws nothing
     }
 }

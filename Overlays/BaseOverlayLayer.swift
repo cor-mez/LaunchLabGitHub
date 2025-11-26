@@ -1,60 +1,51 @@
-// File: Vision/Overlays/BaseOverlayLayer.swift
-//
-//  Common base class for overlay CALayers.
-//  Subclasses override `updateWithFrame(_:)` and `drawOverlay(in:mapper:)`.
+// File: Overlays/BaseOverlayLayer.swift
+//  BaseOverlayLayer.swift
+//  LaunchLab
 //
 
 import UIKit
-import CoreGraphics
 
 class BaseOverlayLayer: CALayer {
 
-    /// Mapper from buffer space → view space, injected by `PreviewView`.
-    internal private(set) var mapper: OverlayMapper?
-
-    // MARK: - Init
-
     override init() {
         super.init()
-        commonInit()
+        contentsScale = UIScreen.main.scale
+        isOpaque = false
+        needsDisplayOnBoundsChange = true   // <-- CRITICAL
+        setNeedsDisplay()
+    }
+
+    override init(layer: Any) {
+        super.init(layer: layer)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
         contentsScale = UIScreen.main.scale
         isOpaque = false
         needsDisplayOnBoundsChange = true
     }
 
-    // MARK: - Public API
+    /// Per-frame mapper injection (buffer → view coordinates).
+    /// Subclasses may override to store mapper.
+    func assignMapper(_ mapper: OverlayMapper) {
+        _ = mapper
+    }
 
+    /// Per-frame vision data injection.
+    /// Subclasses may override to store frame.
     func updateWithFrame(_ frame: VisionFrameData) {
-        // Default: no-op
+        _ = frame
     }
 
-    @discardableResult
-    internal func assignMapper(_ mapper: OverlayMapper) -> Self {
-        self.mapper = mapper
-        setNeedsDisplay()
-        return self
-    }
-
-    // MARK: - Drawing
-
+    /// Ensure layer draws only when a valid context exists.
     override func draw(in ctx: CGContext) {
-        guard let mapper = mapper else { return }
+        let w = ctx.width
+        let h = ctx.height
 
-        // Make UIKit text drawing see THIS CoreGraphics context.
-        UIGraphicsPushContext(ctx)
-        drawOverlay(in: ctx, mapper: mapper)
-        UIGraphicsPopContext()
-    }
+        // Allow small contexts, block only 0×0
+        if w == 0 || h == 0 { return }
 
-    func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
-        // Default: no-op
+        // Child layers override this; nothing drawn here.
     }
 }

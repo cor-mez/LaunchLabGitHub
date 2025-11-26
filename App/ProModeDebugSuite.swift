@@ -41,7 +41,7 @@ final class ProModeDebugSuiteLayer: BaseOverlayLayer {
     }
 
     // MARK: - Draw
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard debugMode else { return }
         guard let frame = frameData else { return }
 

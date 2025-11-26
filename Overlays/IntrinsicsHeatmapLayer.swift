@@ -15,7 +15,7 @@ final class IntrinsicsHeatmapLayer: BaseOverlayLayer {
         size = CGSize(width: frame.width, height: frame.height)
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard intrinsics.fx > 0 else { return }
 
         ctx.setFillColor(UIColor.red.withAlphaComponent(0.4).cgColor)

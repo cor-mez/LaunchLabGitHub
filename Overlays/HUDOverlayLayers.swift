@@ -14,7 +14,7 @@ final class HUDOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let f = frameData else { return }
 
         let font = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)

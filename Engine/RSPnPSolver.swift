@@ -43,7 +43,7 @@ public final class RSPnPSolver {
     // MARK: - Public Entry
     // ----------------------------------------------------------
 
-    public func solve(
+    func solve(
         window: RSWindow,
         intrinsics: CameraIntrinsics
     ) -> RSPnPResult? {

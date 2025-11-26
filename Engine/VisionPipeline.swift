@@ -423,14 +423,18 @@ final class VisionPipeline {
             )
         }
 
-        // ------------------------------------------------------------
         // 11) Ballistics Solver
         // ------------------------------------------------------------
         var solvedBallistics: BallisticsResult? = nil
-        if allowHeavy, let pnp = solvedPnP, let spin = solvedSpin {
+
+        if allowHeavy,
+           let pnp = solvedPnP,
+           let spin = solvedSpin {
+
             solvedBallistics = ballisticsSolver.solve(
-                pnp: pnp,
-                spin: spin
+                rspnp: pnp,
+                spin: spin,
+                intrinsics: preLockFrame.intrinsics
             )
         }
 

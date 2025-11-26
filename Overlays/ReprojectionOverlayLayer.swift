@@ -21,7 +21,7 @@ final class ReprojectionOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let frame = latestFrame else { return }
         guard let corrected = frame.correctedPoints else { return }
         guard let residuals = frame.residuals else { return }

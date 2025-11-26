@@ -22,7 +22,7 @@ final class PoseOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let frame = latestFrame else { return }
         guard let rs = frame.rspnp, rs.isValid else { return }
 

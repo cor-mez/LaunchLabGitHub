@@ -1,139 +1,97 @@
-//
+// File: Overlays/BallLockOverlayLayer.swift
 //  BallLockOverlayLayer.swift
 //  LaunchLab
 //
-//  Debug overlay for visualizing BallLock / RS-PnP state.
-//  Draws a circle in view space and a small text label with quality & state.
+//  Draws the BallLock ROI circle using residual 100:
+//    - error.x, error.y  → ROI center in pixels
+//    - weight            → ROI radius in pixels
+//
+//  Color is driven by BallLock state (residual 101):
+//    - stateCode 0 = searching   → grey
+//    - stateCode 1 = candidate   → grey
+//    - stateCode 2 = locked      → green
+//    - stateCode 3 = cooldown    → grey
 //
 
 import UIKit
-import CoreGraphics
 
 final class BallLockOverlayLayer: BaseOverlayLayer {
 
-    // MARK: - Visual State
+    private var latestFrame: VisionFrameData?
 
-    private enum VisualState {
-        case searching   // no dots / no pose
-        case locking     // dots present, pose not yet valid
-        case locked      // pose is valid
-    }
-
-    // Stored properties for current frame
-    private var roiCenterPx: CGPoint?
-    private var roiRadiusPx: CGFloat = 0
-    private var quality: CGFloat = 0
-    private var confidence: CGFloat = 0
-    private var visualState: VisualState = .searching
-
-    // MARK: - Frame Update
-
+    // Store the latest frame each tick.
     override func updateWithFrame(_ frame: VisionFrameData) {
-        let width  = CGFloat(frame.width)
-        let height = CGFloat(frame.height)
-
-        // Default ROI: bottom-center of the image
-        var center = CGPoint(x: width / 2.0, y: height * 0.65)
-
-        // If we have RS-corrected points, use their average as the center
-        if let corrected = frame.correctedPoints, !corrected.isEmpty {
-            var sx: CGFloat = 0
-            var sy: CGFloat = 0
-            for p in corrected {
-                sx += CGFloat(p.corrected.x)
-                sy += CGFloat(p.corrected.y)
-            }
-            let count = CGFloat(corrected.count)
-            center = CGPoint(x: sx / count, y: sy / count)
-        } else if !frame.dots.isEmpty {
-            // Fallback: average raw dot positions
-            var sx: CGFloat = 0
-            var sy: CGFloat = 0
-            for d in frame.dots {
-                sx += d.position.x
-                sy += d.position.y
-            }
-            let count = CGFloat(frame.dots.count)
-            center = CGPoint(x: sx / count, y: sy / count)
-        }
-
-        roiCenterPx = center
-        // Simple heuristic radius: ~18% of min dimension, clamped
-        roiRadiusPx = max(40.0, min(width, height) * 0.18)
-
-        // Use spin confidence as a "quality" proxy if available
-        if let spin = frame.spin {
-            quality = CGFloat(spin.confidence)
-            confidence = quality
-        } else {
-            quality = 0
-            confidence = 0
-        }
-
-        // Infer current visual state from frame content
-        if frame.dots.isEmpty {
-            visualState = .searching
-        } else if let pose = frame.rspnp, pose.isValid {
-            // We have a valid RS-PnP solution
-            visualState = .locked
-        } else {
-            // We have some dots but no valid pose yet
-            visualState = .locking
-        }
-
-        // Trigger a redraw of this layer
-        setNeedsDisplay()
+        latestFrame = frame
     }
-
-    // MARK: - Drawing
 
     override func draw(in ctx: CGContext) {
-        guard let mapper = mapper, let centerPx = roiCenterPx else { return }
+        let w = ctx.width
+        let h = ctx.height
+        if w == 0 || h == 0 { return }
 
-        // Map ROI center & radius from buffer space to view space
-        let centerView = mapper.mapPointFromBufferToView(point: centerPx)
-        let edgePx = CGPoint(x: centerPx.x + roiRadiusPx, y: centerPx.y)
-        let edgeView = mapper.mapPointFromBufferToView(point: edgePx)
-        let radius = hypot(edgeView.x - centerView.x, edgeView.y - centerView.y)
-        if radius < 2 { return }
-
-        // Stroke color based on state
-        let strokeColor: CGColor
-        switch visualState {
-        case .searching: strokeColor = UIColor.white.cgColor
-        case .locking:   strokeColor = UIColor.systemYellow.cgColor
-        case .locked:    strokeColor = UIColor.systemGreen.cgColor
+        guard
+            let frame = latestFrame,
+            let residuals = frame.residuals
+        else {
+            return
         }
 
-        ctx.setStrokeColor(strokeColor)
+        // ROI residual: id 100 → center (px) + radius (px)
+        guard let roiResidual = residuals.first(where: { $0.id == 100 }) else {
+            return
+        }
+
+        // Lock residual: id 101 → (quality, stateCode)
+        let lockResidual = residuals.first(where: { $0.id == 101 })
+        let stateCode = lockResidual.map { Int($0.error.y) } ?? 0
+
+        let isLocked = (stateCode == 2) // BallLockState.locked.rawValue == 2
+
+        // Choose color based on BallLock state:
+        //  - searching / candidate / cooldown → grey
+        //  - locked → green
+        let strokeColor: UIColor = isLocked
+            ? .systemGreen
+            : UIColor(white: 1.0, alpha: 0.4)
+
+        // ROI in pixel space (camera buffer)
+        let bufferWidth = CGFloat(frame.width)
+        let bufferHeight = CGFloat(frame.height)
+        if bufferWidth <= 0 || bufferHeight <= 0 { return }
+
+        let roiCenterPx = CGPoint(
+            x: CGFloat(roiResidual.error.x),
+            y: CGFloat(roiResidual.error.y)
+        )
+        let roiRadiusPx = CGFloat(roiResidual.weight)
+
+        // Naive pixel → view mapping using uniform scale
+        let bounds = self.bounds
+        if bounds.width <= 0 || bounds.height <= 0 { return }
+
+        let sx = bounds.width / bufferWidth
+        let sy = bounds.height / bufferHeight
+        let scale = min(sx, sy)
+
+        let centerView = CGPoint(
+            x: roiCenterPx.x * scale,
+            y: roiCenterPx.y * scale
+        )
+        let radiusView = roiRadiusPx * scale
+
+        // Draw circle
+        ctx.saveGState()
         ctx.setLineWidth(2.0)
+        ctx.setStrokeColor(strokeColor.cgColor)
 
-        let circleRect = CGRect(
-            x: centerView.x - radius,
-            y: centerView.y - radius,
-            width: radius * 2.0,
-            height: radius * 2.0
+        let rect = CGRect(
+            x: centerView.x - radiusView,
+            y: centerView.y - radiusView,
+            width: radiusView * 2.0,
+            height: radiusView * 2.0
         )
-        ctx.strokeEllipse(in: circleRect)
-
-        // Draw debug text (quality + state code) just above the circle
-        let stateIndex: Int
-        switch visualState {
-        case .searching: stateIndex = 0
-        case .locking:   stateIndex = 1
-        case .locked:    stateIndex = 2
-        }
-
-        let text = String(format: "q: %.2f  s:%d", quality, stateIndex)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: UIColor.white
-        ]
-        let textSize = (text as NSString).size(withAttributes: attributes)
-        let textOrigin = CGPoint(
-            x: centerView.x - textSize.width / 2.0,
-            y: centerView.y - radius - textSize.height - 4.0
-        )
-        (text as NSString).draw(at: textOrigin, withAttributes: attributes)
+        ctx.addEllipse(in: rect)
+        ctx.strokePath()
+        ctx.restoreGState()
     }
 }

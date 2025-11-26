@@ -1,29 +1,35 @@
-//
-//  OverlayView.swift
-//  LaunchLab
-//
+// File: Overlays/OverlayView.swift
 
-import SwiftUI
+import UIKit
 
-struct OverlayView: UIViewRepresentable {
+final class OverlayView: UIView {
 
-    let layers: [BaseOverlayLayer]
+    private let layers: [BaseOverlayLayer]
 
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView()
-        v.isUserInteractionEnabled = false
+    init(layers: [BaseOverlayLayer]) {
+        self.layers = layers
+        super.init(frame: .zero)
+        isOpaque = false
 
+        // Add layers to the view
         for layer in layers {
-            v.layer.addSublayer(layer)
+            layer.frame = bounds           // <-- initial sizing
+            self.layer.addSublayer(layer)
         }
-
-        return v
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        // CRITICAL FIX:
+        // Resize all overlay layers to match the view's bounds EVERY frame.
         for layer in layers {
-            layer.frame = uiView.bounds
-            layer.setNeedsDisplay()
+            layer.frame = bounds
+            layer.setNeedsDisplay()       // REQUIRED to trigger draw(in:)
         }
     }
 }

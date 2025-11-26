@@ -19,7 +19,7 @@ final class RSRowOverlayLayer: BaseOverlayLayer {
         self.rows = tmp
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard rows.count > 0 else { return }
 
         ctx.setLineWidth(1.0)

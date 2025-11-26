@@ -13,7 +13,7 @@ final class DotOverlayLayer: BaseOverlayLayer {
         self.dots = frame.dots
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         ctx.setLineWidth(2.0)
         ctx.setStrokeColor(UIColor.systemYellow.cgColor)
 

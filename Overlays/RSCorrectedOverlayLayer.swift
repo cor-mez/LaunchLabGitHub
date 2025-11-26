@@ -19,7 +19,7 @@ final class RSCorrectedOverlayLayer: BaseOverlayLayer {
         }
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         ctx.setLineWidth(2.0)
         ctx.setStrokeColor(UIColor.systemGreen.cgColor)
 

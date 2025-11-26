@@ -28,7 +28,7 @@ public final class SpinSolver {
     // MARK: - Public Entry Point
     // ---------------------------------------------------------------------
 
-    public func solve(
+    func solve(
         window: RSWindow,
         pnp: RSPnPResult,
         intrinsics: CameraIntrinsics,

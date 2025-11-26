@@ -11,7 +11,7 @@ final class DotTrackingOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let f = frameData else { return }
 
         ctx.setLineWidth(1)

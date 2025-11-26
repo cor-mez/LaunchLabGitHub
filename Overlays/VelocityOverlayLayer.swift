@@ -24,7 +24,7 @@ final class VelocityOverlayLayer: BaseOverlayLayer {
         }
     }
 
-    override func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard !vectors.isEmpty else { return }
 
         ctx.setLineWidth(2.0)
