@@ -1,3 +1,4 @@
+// File: Engine/CalibrationPreviewView.swift
 //
 //  CalibrationPreviewView.swift
 //  LaunchLab
@@ -11,12 +12,12 @@ struct CalibrationPreviewView: UIViewRepresentable {
     @EnvironmentObject var camera: CameraManager
 
     func makeUIView(context: Context) -> PreviewView {
-        let view = PreviewView(session: camera.cameraSession)
-        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        let view = PreviewView(session: camera.session)
+        view.videoPreviewLayer.videoGravity = AVLayerVideoGravity.resizeAspectFill
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        uiView.session = camera.cameraSession
+        uiView.session = camera.session
     }
 }

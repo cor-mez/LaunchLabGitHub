@@ -32,6 +32,7 @@ final class BallLockStateMachine {
     private var badFrameCount: Int = 0
     private var currentCenter: CGPoint?
     private var currentRadius: CGFloat?
+    private var currentQuality: CGFloat = 0.0
 
     func reset() {
         state = .searching
@@ -39,6 +40,7 @@ final class BallLockStateMachine {
         badFrameCount = 0
         currentCenter = nil
         currentRadius = nil
+        currentQuality = 0.0
     }
 
     /// Updates the lock state from the latest cluster plus runtime config.
@@ -56,6 +58,7 @@ final class BallLockStateMachine {
     ///   - alphaCenter: Centroid smoothing factor.
     ///   - roiRadiusFactor: Locked ROI radius factor (e.g. 2× cluster radius).
     ///   - loggingEnabled: If true, prints LOCK/UNLOCK transitions.
+    ///   - suppressFlicker: If true, freeze state/ROI/quality for dim phases.
     func update(
         cluster: BallCluster?,
         dt: Double,
@@ -68,7 +71,8 @@ final class BallLockStateMachine {
         unlockAfterM: Int,
         alphaCenter: CGFloat,
         roiRadiusFactor: CGFloat,
-        loggingEnabled: Bool
+        loggingEnabled: Bool,
+        suppressFlicker: Bool = false
     ) -> BallLockOutput {
         _ = dt
 
@@ -77,8 +81,33 @@ final class BallLockStateMachine {
         let quality: CGFloat = cluster?.qualityScore ?? 0
         let hasCluster = cluster != nil
 
-        // Sudden quality collapse: go straight to cooldown from candidate/locked.
-        if quality < suddenDropThreshold, (state == .locked || state == .candidate) {
+        // In flicker-dim phases, freeze state/ROI/quality.
+        if suppressFlicker {
+            let outputCenter = currentCenter ?? searchRoiCenter
+            let outputRadius = currentRadius ?? searchRoiRadius
+            let output = BallLockOutput(
+                state: state,
+                stateCode: state.rawValue,
+                roiCenter: outputCenter,
+                roiRadius: outputRadius,
+                quality: currentQuality,
+                isLocked: state == .locked
+            )
+            if loggingEnabled, previousState != state {
+                logTransition(
+                    from: previousState,
+                    to: state,
+                    quality: currentQuality,
+                    frameIndex: frameIndex
+                )
+            }
+            return output
+        }
+
+        currentQuality = quality
+
+        // Sudden quality collapse: only from LOCKED go straight to cooldown.
+        if quality < suddenDropThreshold, state == .locked {
             state = .cooldown
             goodFrameCount = 0
             badFrameCount = 1
@@ -315,7 +344,6 @@ final class BallLockStateMachine {
         quality: CGFloat,
         frameIndex: Int
     ) {
-        // Keep log strings short and only on transitions.
         if new == .locked {
             print("BallLock: LOCKED at frame \(frameIndex) (Q=\(String(format: "%.2f", quality)))")
         } else if old == .locked {

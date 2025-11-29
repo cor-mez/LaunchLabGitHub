@@ -2,15 +2,11 @@
 //  BallLockOverlayLayer.swift
 //  LaunchLab
 //
-//  Draws the BallLock ROI circle using residual 100:
-//    - error.x, error.y  → ROI center in pixels
-//    - weight            → ROI radius in pixels
+//  Draws the BallLock ROI circle and encodes lock state in color:
 //
-//  Color is driven by BallLock state (residual 101):
-//    - stateCode 0 = searching   → grey
-//    - stateCode 1 = candidate   → grey
-//    - stateCode 2 = locked      → green
-//    - stateCode 3 = cooldown    → grey
+//    • searching / cooldown  → grey
+//    • candidate             → yellow
+//    • locked                → green
 //
 
 import UIKit
@@ -19,7 +15,7 @@ final class BallLockOverlayLayer: BaseOverlayLayer {
 
     private var latestFrame: VisionFrameData?
 
-    // Store the latest frame each tick.
+    // Store the latest frame each tick
     override func updateWithFrame(_ frame: VisionFrameData) {
         latestFrame = frame
     }
@@ -31,28 +27,11 @@ final class BallLockOverlayLayer: BaseOverlayLayer {
 
         guard
             let frame = latestFrame,
-            let residuals = frame.residuals
+            let residuals = frame.residuals,
+            let roiResidual = residuals.first(where: { $0.id == 100 })
         else {
             return
         }
-
-        // ROI residual: id 100 → center (px) + radius (px)
-        guard let roiResidual = residuals.first(where: { $0.id == 100 }) else {
-            return
-        }
-
-        // Lock residual: id 101 → (quality, stateCode)
-        let lockResidual = residuals.first(where: { $0.id == 101 })
-        let stateCode = lockResidual.map { Int($0.error.y) } ?? 0
-
-        let isLocked = (stateCode == 2) // BallLockState.locked.rawValue == 2
-
-        // Choose color based on BallLock state:
-        //  - searching / candidate / cooldown → grey
-        //  - locked → green
-        let strokeColor: UIColor = isLocked
-            ? .systemGreen
-            : UIColor(white: 1.0, alpha: 0.4)
 
         // ROI in pixel space (camera buffer)
         let bufferWidth = CGFloat(frame.width)
@@ -65,7 +44,28 @@ final class BallLockOverlayLayer: BaseOverlayLayer {
         )
         let roiRadiusPx = CGFloat(roiResidual.weight)
 
-        // Naive pixel → view mapping using uniform scale
+        // Lock residual: id 101 → (quality, stateCode)
+        let lockResidual = residuals.first(where: { $0.id == 101 })
+        let stateCode = lockResidual.map { Int($0.error.y) } ?? 0
+        // let quality  = lockResidual?.error.x ?? 0  // available if needed
+
+        let isSearching  = (stateCode == 0)
+        let isCandidate  = (stateCode == 1)
+        let isLocked     = (stateCode == 2)
+        let isCooldown   = (stateCode == 3)
+
+        let strokeColor: UIColor
+        if isLocked {
+            strokeColor = .systemGreen              // final lock
+        } else if isCandidate {
+            strokeColor = .systemYellow             // “almost locked”
+        } else if isSearching || isCooldown {
+            strokeColor = UIColor(white: 1.0, alpha: 0.4)
+        } else {
+            strokeColor = UIColor(white: 1.0, alpha: 0.4)
+        }
+
+        // Map buffer pixels → overlay layer points (uniform scale)
         let bounds = self.bounds
         if bounds.width <= 0 || bounds.height <= 0 { return }
 

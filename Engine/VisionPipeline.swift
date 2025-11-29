@@ -1,11 +1,7 @@
+// File: Engine/VisionPipeline.swift
 //
 //  VisionPipeline.swift
 //  LaunchLab
-//
-//  v1.5 -- Corrected & Fully Integrated
-//  Pipeline:
-//    FAST9 → DotTracker → LK → Cluster → BallLock → RS-Deg
-//    → RSWindowBuilder → RSPnP (V1.5 SE3) → Spin → Ballistics
 //
 
 import Foundation
@@ -27,16 +23,17 @@ final class VisionPipeline {
 
     private let rsCalculator = RSDegeneracyCalculator()
     private let rsWindowBuilder = RSWindowBuilder()
+    private let flickerAnalyzer = FlickerAnalyzer()
+
     private let rspnpSolver = RSPnPSolver()
     private let spinSolver = SpinSolver()
-    private let ballisticsSolver = BallisticsSolver()
 
     // MARK: - Config
 
     private let ballLockConfig: BallLockConfig
     private var lastConfigResetFlag: Bool = false
 
-    // MARK: - State
+    // MARK: - Runtime state
 
     private var prevAllDots: [VisionDot] = []
     private var prevTrackingState: DotTrackingState = .initial
@@ -44,6 +41,7 @@ final class VisionPipeline {
     private var prevTimestamp: Double?
 
     private var prevBallDots: [VisionDot] = []
+
     private var lockedRunLength: Int = 0
 
     private var lastFrameWidth: Int = 0
@@ -51,9 +49,14 @@ final class VisionPipeline {
     private var lastIntrinsicsSignature: (Float, Float, Float, Float)?
     private var frameIndex: Int = 0
 
+    private var lastStableCluster: BallCluster?
+    private var smoothedBallRadiusPx: CGFloat = 0
+
     private(set) var lastWaggleHint: WagglePlacementHint?
 
-    // MARK: - Init
+    var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
+    // MARK: - Init / Reset
 
     init(ballLockConfig: BallLockConfig) {
         self.ballLockConfig = ballLockConfig
@@ -62,37 +65,42 @@ final class VisionPipeline {
 
     func reset() {
         ballLockStateMachine.reset()
+        rsWindowBuilder.reset()
         lockedRunLength = 0
         prevAllDots = []
         prevTrackingState = .initial
         prevPixelBuffer = nil
         prevTimestamp = nil
         prevBallDots = []
-        rsWindowBuilder.reset()
+        lastFrameWidth = 0
+        lastFrameHeight = 0
+        lastIntrinsicsSignature = nil
+        frameIndex = 0
+        lastStableCluster = nil
+        smoothedBallRadiusPx = 0
         lastWaggleHint = nil
     }
 
-    // MARK: - Main Entry
+    // MARK: - Public entry
 
     func processFrame(
         pixelBuffer: CVPixelBuffer,
         timestamp: Double,
-        intrinsics: CameraIntrinsics
+        intrinsics: CameraIntrinsics,
+        imuState: IMUState
     ) -> VisionFrameData {
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let imageSize = CGSize(width: width, height: height)
 
-        // ------------------------------------------------------------
-        // Orientation / Intrinsics Change → Reset
-        // ------------------------------------------------------------
+        let flicker = flickerAnalyzer.evaluate(pixelBuffer: pixelBuffer)
+
         let intrSignature = (intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy)
         if lastFrameWidth != 0 {
             if width != lastFrameWidth ||
                height != lastFrameHeight ||
-               !intrinsicsEqual(lhs: intrSignature, rhs: lastIntrinsicsSignature)
-            {
+               !intrinsicsEqual(lhs: intrSignature, rhs: lastIntrinsicsSignature) {
                 reset()
             }
         }
@@ -100,9 +108,6 @@ final class VisionPipeline {
         lastFrameHeight = height
         lastIntrinsicsSignature = intrSignature
 
-        // ------------------------------------------------------------
-        // Config Reset
-        // ------------------------------------------------------------
         let configResetFlag = ballLockConfig.needsReset
         if configResetFlag != lastConfigResetFlag {
             reset()
@@ -111,50 +116,39 @@ final class VisionPipeline {
 
         frameIndex &+= 1
 
-        // ------------------------------------------------------------
-        // Delta Time
-        // ------------------------------------------------------------
-        let dt: Double = prevTimestamp.map { max(0, timestamp - $0) } ?? 0
+        let dt: Double
+        if let prevTs = prevTimestamp {
+            dt = max(0.0, timestamp - prevTs)
+        } else {
+            dt = 0.0
+        }
         prevTimestamp = timestamp
 
-        // ------------------------------------------------------------
-        // 1) FAST9 Detection
-        // ------------------------------------------------------------
         let detections = dotDetector.detect(in: pixelBuffer)
 
-        // ------------------------------------------------------------
-        // 2) DotTracker → ID association
-        // ------------------------------------------------------------
-        let (trackedDots, trackingState) =
-            dotTracker.track(
-                detections: detections,
-                previousDots: prevAllDots,
-                previousState: prevTrackingState
-            )
+        let (trackedDots, trackingState) = dotTracker.track(
+            detections: detections,
+            previousDots: prevAllDots,
+            previousState: prevTrackingState
+        )
 
-        // ------------------------------------------------------------
-        // 3) LK Refinement
-        // ------------------------------------------------------------
         let refinedDots: [VisionDot]
         let flows: [SIMD2<Float>]
 
         if let prevBuffer = prevPixelBuffer {
-            let (r, f) = lkRefiner.refine(
+            let (refined, flow) = lkRefiner.refine(
                 dots: trackedDots,
                 prevBuffer: prevBuffer,
                 currBuffer: pixelBuffer
             )
-            refinedDots = r
-            flows = f
+            refinedDots = refined
+            flows = flow
         } else {
             refinedDots = trackedDots
             flows = []
         }
 
-        // ------------------------------------------------------------
-        // 4) Base Frame (pre-lock)
-        // ------------------------------------------------------------
-        var preLockFrame = VisionFrameData(
+        let baseFramePreLock = VisionFrameData(
             timestamp: timestamp,
             pixelBuffer: pixelBuffer,
             width: width,
@@ -172,339 +166,389 @@ final class VisionPipeline {
             flowVectors: flows
         )
 
-        // ROI for clustering
-        let searchCenter = CGPoint(x: CGFloat(width) * 0.5,
-                                   y: CGFloat(height) * 0.65)
-        let searchRadius = min(CGFloat(width), CGFloat(height)) * 0.25
-
-        // ------------------------------------------------------------
-        // 5) BallLock + RS-gating
-        // ------------------------------------------------------------
-        let frameAfterLock = runBallLockStage(
-            refinedDots: refinedDots,
-            preLockFrame: preLockFrame,
-            imageSize: imageSize,
-            searchCenter: searchCenter,
-            searchRadius: searchRadius,
-            dt: dt,
-            frameIndex: frameIndex
+        let principalPoint = CGPoint(
+            x: CGFloat(intrinsics.cx),
+            y: CGFloat(intrinsics.cy)
         )
 
-        // ------------------------------------------------------------
-        // 6) VelocityTracker on ball-only dots
-        // ------------------------------------------------------------
-        let velDots = velocityTracker.update(
+        let searchRoiCenter = CGPoint(
+            x: CGFloat(width) * 0.5,
+            y: CGFloat(height) * 0.65
+        )
+        let searchRoiRadius = min(CGFloat(width), CGFloat(height)) * 0.25
+
+        let frameAfterBallLock = runBallLockStage(
+            refinedDots: refinedDots,
+            imageSize: imageSize,
+            searchRoiCenter: searchRoiCenter,
+            searchRoiRadius: searchRoiRadius,
+            baseFrameData: baseFramePreLock,
+            dt: dt,
+            frameIndex: frameIndex,
+            principalPoint: principalPoint,
+            flicker: flicker,
+            imuState: imuState
+        )
+
+        let ballDotsWithVelocity = velocityTracker.update(
             previousDots: prevBallDots,
-            currentDots: frameAfterLock.dots,
+            currentDots: frameAfterBallLock.dots,
             dt: dt
         )
 
-        // ------------------------------------------------------------
-        // 7) Final output frame
-        // ------------------------------------------------------------
         let finalFrame = VisionFrameData(
-            timestamp: frameAfterLock.timestamp,
-            pixelBuffer: frameAfterLock.pixelBuffer,
-            width: frameAfterLock.width,
-            height: frameAfterLock.height,
-            intrinsics: frameAfterLock.intrinsics,
-            dots: velDots,
-            trackingState: frameAfterLock.trackingState,
-            bearings: frameAfterLock.bearings,
-            correctedPoints: frameAfterLock.correctedPoints,
-            rspnp: frameAfterLock.rspnp,
-            spin: frameAfterLock.spin,
-            spinDrift: frameAfterLock.spinDrift,
-            ballRadiusPx: frameAfterLock.ballRadiusPx,
-            residuals: frameAfterLock.residuals,
-            flowVectors: frameAfterLock.flowVectors
+            timestamp: frameAfterBallLock.timestamp,
+            pixelBuffer: frameAfterBallLock.pixelBuffer,
+            width: frameAfterBallLock.width,
+            height: frameAfterBallLock.height,
+            intrinsics: frameAfterBallLock.intrinsics,
+            dots: ballDotsWithVelocity,
+            trackingState: frameAfterBallLock.trackingState,
+            bearings: frameAfterBallLock.bearings,
+            correctedPoints: frameAfterBallLock.correctedPoints,
+            rspnp: frameAfterBallLock.rspnp,
+            spin: frameAfterBallLock.spin,
+            spinDrift: frameAfterBallLock.spinDrift,
+            ballRadiusPx: frameAfterBallLock.ballRadiusPx,
+            residuals: frameAfterBallLock.residuals,
+            flowVectors: frameAfterBallLock.flowVectors
         )
 
-        // ------------------------------------------------------------
-        // Update State
-        // ------------------------------------------------------------
         prevAllDots = refinedDots
         prevTrackingState = trackingState
         prevPixelBuffer = pixelBuffer
-        prevBallDots = velDots
+        prevBallDots = ballDotsWithVelocity
 
         return finalFrame
     }
 
-    // ========================================================================
-    // MARK: - RUN: BallLock → RS → Solvers → Frame Builder
-    // ========================================================================
+    // MARK: - BallLock + RS + Heavy
 
     private func runBallLockStage(
         refinedDots: [VisionDot],
-        preLockFrame: VisionFrameData,
         imageSize: CGSize,
-        searchCenter: CGPoint,
-        searchRadius: CGFloat,
+        searchRoiCenter: CGPoint,
+        searchRoiRadius: CGFloat,
+        baseFrameData: VisionFrameData,
         dt: Double,
-        frameIndex: Int
+        frameIndex: Int,
+        principalPoint: CGPoint,
+        flicker: FlickerMetrics,
+        imuState: IMUState
     ) -> VisionFrameData {
 
         let cfg = ballLockConfig
 
-        // ------------------------------------------------------------
-        // 1) Classify Ball Cluster
-        // ------------------------------------------------------------
         let params = BallClusterParams(
             minCorners: cfg.minCorners,
             maxCorners: cfg.maxCorners,
             minRadiusPx: CGFloat(cfg.minRadiusPx),
             maxRadiusPx: CGFloat(cfg.maxRadiusPx),
-            idealRadiusMinPx: 20,
-            idealRadiusMaxPx: 60,
-            roiBorderMarginPx: 10,
+            idealRadiusMinPx: 20.0,
+            idealRadiusMaxPx: 60.0,
+            roiBorderMarginPx: 10.0,
             symmetryWeight: CGFloat(cfg.symmetryWeight),
             countWeight: CGFloat(cfg.countWeight),
             radiusWeight: CGFloat(cfg.radiusWeight)
         )
 
-        let dotsPos = refinedDots.map { $0.position }
+        var positions: [CGPoint] = []
+        positions.reserveCapacity(refinedDots.count)
+        for d in refinedDots {
+            positions.append(d.position)
+        }
 
-        let cluster = ballClusterClassifier.classify(
-            dots: dotsPos,
+        let rawCluster = ballClusterClassifier.classify(
+            dots: positions,
             imageSize: imageSize,
-            roiCenter: searchCenter,
-            roiRadius: searchRadius,
+            roiCenter: searchRoiCenter,
+            roiRadius: searchRoiRadius,
             params: params
         )
 
-        let clusterForLock =
-            (cluster != nil && cluster!.qualityScore >= CGFloat(cfg.minQualityToEnterLock))
-            ? cluster : nil
+        var effectiveCluster: BallCluster? = rawCluster
+        if !flicker.isDimPhase {
+            if let c = rawCluster {
+                lastStableCluster = c
+            }
+        } else {
+            if let stable = lastStableCluster {
+                effectiveCluster = stable
+            } else {
+                effectiveCluster = nil
+            }
+        }
 
-        // ------------------------------------------------------------
-        // 2) BallLock state update
-        // ------------------------------------------------------------
-        let lock = ballLockStateMachine.update(
+        let clusterForLock: BallCluster?
+        if let c = effectiveCluster,
+           c.qualityScore >= CGFloat(cfg.minQualityToEnterLock) {
+            clusterForLock = c
+        } else {
+            clusterForLock = nil
+        }
+
+        let lockOutput = ballLockStateMachine.update(
             cluster: clusterForLock,
             dt: dt,
             frameIndex: frameIndex,
-            searchRoiCenter: searchCenter,
-            searchRoiRadius: searchRadius,
+            searchRoiCenter: searchRoiCenter,
+            searchRoiRadius: searchRoiRadius,
             qLock: CGFloat(cfg.qLock),
             qStay: CGFloat(cfg.qStay),
             lockAfterN: cfg.lockAfterN,
             unlockAfterM: cfg.unlockAfterM,
             alphaCenter: CGFloat(cfg.alphaCenter),
             roiRadiusFactor: CGFloat(cfg.roiRadiusFactor),
-            loggingEnabled: false
+            loggingEnabled: false,
+            suppressFlicker: flicker.isDimPhase
         )
 
-        // ------------------------------------------------------------
-        // 3) RS-Degeneracy
-        // ------------------------------------------------------------
-        let isPortrait = imageSize.height >= imageSize.width
-        let ballPx = cluster?.radiusPx ?? 0
-        let rowSpan = ballPx * 2
+        let isPortrait: Bool = {
+            let g = imuState.gravity
+            let gNorm = simd_length(g) > 0 ? simd_normalize(g) : SIMD3<Float>(0, -1, 0)
+            let aligned = abs(gNorm.y) > 0.7
+            return aligned
+        }()
 
-        // Compute shear slope
+        let ballPx: CGFloat = effectiveCluster?.radiusPx ?? 0.0
+        let rowSpanPx: CGFloat = max(0.0, ballPx * 2.0)
+
         let shearSlope: CGFloat
-        if let c = cluster, let flows = preLockFrame.flowVectors, !flows.isEmpty {
-            let rr = c.radiusPx * CGFloat(cfg.roiRadiusFactor)
+        if let centroid = effectiveCluster?.centroid,
+           let flows = baseFrameData.flowVectors,
+           !flows.isEmpty {
+            let roiRadiusForShear = (effectiveCluster?.radiusPx ?? searchRoiRadius) * CGFloat(cfg.roiRadiusFactor)
             shearSlope = rsCalculator.estimateShearSlope(
-                dots: preLockFrame.dots,
+                dots: baseFrameData.dots,
                 flows: flows,
-                roiCenter: c.centroid,
-                roiRadius: rr
+                roiCenter: centroid,
+                roiRadius: roiRadiusForShear
             )
         } else {
-            shearSlope = 0
+            shearSlope = 0.0
         }
+
+        let blurStreakPx: CGFloat = 0.0
+        let phaseRatio: CGFloat = 1.0
 
         let rsInput = RSDegeneracyInput(
             shearSlope: shearSlope,
-            rowSpanPx: rowSpan,
-            blurStreakPx: 0,
-            phaseRatio: 1,
+            rowSpanPx: rowSpanPx,
+            blurStreakPx: blurStreakPx,
+            phaseRatio: phaseRatio,
             ballPx: ballPx,
-            isPortrait: isPortrait
+            isPortrait: isPortrait,
+            flickerModulation: CGFloat(flicker.flickerModulation)
         )
 
-        let rsResult = rsCalculator.evaluate(rsInput)
+        let rsResult = rsCalculator.evaluate(
+            rsInput,
+            isFlickerUnsafe: flicker.isFlickerUnsafe
+        )
 
-        // waggle test
-        if lock.state == .searching && shearSlope > 0 {
+        if lockOutput.state == .searching, shearSlope > 0 {
             lastWaggleHint = rsCalculator.waggleHint(for: shearSlope)
         }
 
-        // ------------------------------------------------------------
-        // 4) Locked run
-        // ------------------------------------------------------------
-        lockedRunLength = lock.isLocked ? lockedRunLength + 1 : 0
-        let inLockedWindow = lockedRunLength >= 3
-
-        // ------------------------------------------------------------
-        // 5) Filter dots by ROI
-        // ------------------------------------------------------------
-        let filteredDots: [VisionDot]
-        if lock.isLocked,
-           let rc = lock.roiCenter,
-           let rr = lock.roiRadius {
-
-            let r2 = rr * rr
-            filteredDots = preLockFrame.dots.filter { d in
-                let dx = d.position.x - rc.x
-                let dy = d.position.y - rc.y
-                return dx*dx + dy*dy <= r2
+        if lockOutput.isLocked {
+            if lockedRunLength < Int.max {
+                lockedRunLength += 1
             }
-
         } else {
-            filteredDots = []
+            lockedRunLength = 0
         }
 
-        // ------------------------------------------------------------
-        // 6) Build locked frame BEFORE solvers (correct frame to push)
-        // ------------------------------------------------------------
-        var lockedFrame = VisionFrameData(
-            timestamp: preLockFrame.timestamp,
-            pixelBuffer: preLockFrame.pixelBuffer,
-            width: preLockFrame.width,
-            height: preLockFrame.height,
-            intrinsics: preLockFrame.intrinsics,
+        let allDots = baseFrameData.dots
+        var filteredDots: [VisionDot] = []
+
+        if lockOutput.isLocked,
+           let roiCenter = lockOutput.roiCenter,
+           let roiRadius = lockOutput.roiRadius {
+            let radiusSq = roiRadius * roiRadius
+            filteredDots.reserveCapacity(allDots.count)
+            for dot in allDots {
+                let dx = dot.position.x - roiCenter.x
+                let dy = dot.position.y - roiCenter.y
+                if dx * dx + dy * dy <= radiusSq {
+                    filteredDots.append(dot)
+                }
+            }
+        }
+
+        var ballRadiusPxSmoothed: CGFloat? = nil
+        if let c = effectiveCluster {
+            let alpha: CGFloat = 0.15
+            if smoothedBallRadiusPx <= 0 {
+                smoothedBallRadiusPx = c.radiusPx
+            } else {
+                let invAlpha: CGFloat = 1.0 - alpha
+                smoothedBallRadiusPx = smoothedBallRadiusPx * invAlpha + c.radiusPx * alpha
+            }
+            ballRadiusPxSmoothed = smoothedBallRadiusPx
+        }
+
+        var residuals: [RPEResidual] = baseFrameData.residuals ?? []
+
+        if let roiCenter = lockOutput.roiCenter,
+           let roiRadius = lockOutput.roiRadius {
+            let roiResidual = RPEResidual(
+                id: 100,
+                error: SIMD2<Float>(
+                    Float(roiCenter.x),
+                    Float(roiCenter.y)
+                ),
+                weight: Float(roiRadius)
+            )
+            residuals.append(roiResidual)
+        }
+
+        let qualityResidual = RPEResidual(
+            id: 101,
+            error: SIMD2<Float>(
+                Float(lockOutput.quality),
+                Float(lockOutput.stateCode)
+            ),
+            weight: Float(rsResult.rsConfidence)
+        )
+        residuals.append(qualityResidual)
+
+        if let c = effectiveCluster {
+            let metricsResidual = RPEResidual(
+                id: 102,
+                error: SIMD2<Float>(
+                    Float(c.symmetryScore),
+                    Float(c.radiusPx)
+                ),
+                weight: Float(c.count)
+            )
+            residuals.append(metricsResidual)
+
+            let scoresResidual = RPEResidual(
+                id: 103,
+                error: SIMD2<Float>(
+                    Float(c.countScore),
+                    Float(c.radiusScore)
+                ),
+                weight: Float(c.eccentricity)
+            )
+            residuals.append(scoresResidual)
+        }
+
+        let rsResidual = RPEResidual(
+            id: 104,
+            error: SIMD2<Float>(
+                Float(rsResult.shearSlope),
+                Float(rsResult.rowSpanPx)
+            ),
+            weight: Float(rsResult.rsConfidence)
+        )
+        residuals.append(rsResidual)
+
+        let preHeavyFrame = VisionFrameData(
+            timestamp: baseFrameData.timestamp,
+            pixelBuffer: baseFrameData.pixelBuffer,
+            width: baseFrameData.width,
+            height: baseFrameData.height,
+            intrinsics: baseFrameData.intrinsics,
             dots: filteredDots,
-            trackingState: preLockFrame.trackingState,
-            bearings: nil,
-            correctedPoints: nil,
+            trackingState: baseFrameData.trackingState,
+            bearings: baseFrameData.bearings,
+            correctedPoints: baseFrameData.correctedPoints,
             rspnp: nil,
             spin: nil,
             spinDrift: nil,
-            ballRadiusPx: cluster?.radiusPx,   // NEW--critical for RS-PnP V1.5
-            residuals: preLockFrame.residuals,
-            flowVectors: preLockFrame.flowVectors
+            ballRadiusPx: ballRadiusPxSmoothed,
+            residuals: residuals,
+            flowVectors: baseFrameData.flowVectors
         )
 
-        // ------------------------------------------------------------
-        // 7) RS WindowBuilder (use lockedFrame)
-        // ------------------------------------------------------------
         let rsWindow = rsWindowBuilder.push(
-            frame: lockedFrame,
-            isLocked: lock.isLocked,
-            clusterQuality: lock.quality,
+            frame: preHeavyFrame,
+            isLocked: lockOutput.isLocked,
+            clusterQuality: lockOutput.quality,
             rsResult: rsResult,
             lockedRunLength: lockedRunLength
         )
 
-        // ------------------------------------------------------------
-        // 8) Heavy Solver Gating
-        // ------------------------------------------------------------
-        let allowHeavy =
-            lock.isLocked &&
-            lock.quality >= CGFloat(cfg.qLock) &&
+        let allowHeavyRS =
+            lockOutput.isLocked &&
+            lockOutput.quality >= CGFloat(cfg.qLock) &&
             rsResult.rsConfidence >= 0.60 &&
             !rsResult.criticalDegeneracy &&
-            inLockedWindow
+            !flicker.isFlickerUnsafe &&
+            lockedRunLength >= 3 &&
+            rsWindow != nil
 
-        // ------------------------------------------------------------
-        // 9) RS-PnP (V1.5)
-        // ------------------------------------------------------------
+        let thermalOK = thermalState != .serious && thermalState != .critical
+        let finalAllowHeavy = allowHeavyRS && thermalOK
+
+        let rsGateCode: Float
+        if !lockOutput.isLocked ||
+            lockOutput.quality < CGFloat(cfg.qLock) ||
+            lockedRunLength < 3 ||
+            rsWindow == nil {
+            rsGateCode = 4
+        } else if rsResult.criticalDegeneracy || rsResult.rsConfidence < 0.60 {
+            rsGateCode = 2
+        } else if flicker.isFlickerUnsafe {
+            rsGateCode = 3
+        } else if !thermalOK {
+            rsGateCode = 5
+        } else {
+            rsGateCode = 1
+        }
+
+        let gateResidual = RPEResidual(
+            id: 105,
+            error: SIMD2<Float>(
+                rsGateCode,
+                Float(flicker.flickerModulation)
+            ),
+            weight: Float(rsResult.rsConfidence)
+        )
+        residuals.append(gateResidual)
+
         var solvedPnP: RSPnPResult? = nil
-        if allowHeavy, let win = rsWindow {
+        if finalAllowHeavy, let win = rsWindow {
             solvedPnP = rspnpSolver.solve(
                 window: win,
-                intrinsics: preLockFrame.intrinsics
+                intrinsics: baseFrameData.intrinsics,
+                rowGradient: flicker.rowGradient
             )
         }
 
-        // ------------------------------------------------------------
-        // 10) Spin Solver
-        // ------------------------------------------------------------
         var solvedSpin: SpinResult? = nil
-        if allowHeavy, let pnp = solvedPnP, let win = rsWindow, pnp.isValid {
+        if finalAllowHeavy,
+           let pnp = solvedPnP,
+           pnp.isValid,
+           let win = rsWindow {
             solvedSpin = spinSolver.solve(
                 window: win,
                 pnp: pnp,
-                intrinsics: preLockFrame.intrinsics,
-                flows: preLockFrame.flowVectors ?? []
+                intrinsics: baseFrameData.intrinsics,
+                flows: baseFrameData.flowVectors ?? []
             )
         }
 
-        // 11) Ballistics Solver
-        // ------------------------------------------------------------
-        var solvedBallistics: BallisticsResult? = nil
-
-        if allowHeavy,
-           let pnp = solvedPnP,
-           let spin = solvedSpin {
-
-            solvedBallistics = ballisticsSolver.solve(
-                rspnp: pnp,
-                spin: spin,
-                intrinsics: preLockFrame.intrinsics
-            )
-        }
-
-        // ------------------------------------------------------------
-        // 12) Residuals
-        // ------------------------------------------------------------
-        var residuals = preLockFrame.residuals ?? []
-
-        if let rc = lock.roiCenter, let rr = lock.roiRadius {
-            residuals.append(
-                RPEResidual(id: 100,
-                            error: SIMD2(Float(rc.x), Float(rc.y)),
-                            weight: Float(rr))
-            )
-        }
-
-        residuals.append(
-            RPEResidual(id: 101,
-                        error: SIMD2(Float(lock.quality),
-                                     Float(lock.stateCode)),
-                        weight: Float(rsResult.rsConfidence))
-        )
-
-        if let c = cluster {
-            residuals.append(
-                RPEResidual(id: 102,
-                            error: SIMD2(Float(c.symmetryScore),
-                                         Float(c.radiusPx)),
-                            weight: Float(c.count))
-            )
-            residuals.append(
-                RPEResidual(id: 103,
-                            error: SIMD2(Float(c.countScore),
-                                         Float(c.radiusScore)),
-                            weight: Float(c.eccentricity))
-            )
-        }
-
-        residuals.append(
-            RPEResidual(id: 104,
-                        error: SIMD2(Float(rsResult.shearSlope),
-                                     Float(rsResult.rowSpanPx)),
-                        weight: Float(rsResult.rsConfidence))
-        )
-
-        // ------------------------------------------------------------
-        // 13) FINAL Locked Frame
-        // ------------------------------------------------------------
-        lockedFrame = VisionFrameData(
-            timestamp: preLockFrame.timestamp,
-            pixelBuffer: preLockFrame.pixelBuffer,
-            width: preLockFrame.width,
-            height: preLockFrame.height,
-            intrinsics: preLockFrame.intrinsics,
+        let lockedFrame = VisionFrameData(
+            timestamp: baseFrameData.timestamp,
+            pixelBuffer: baseFrameData.pixelBuffer,
+            width: baseFrameData.width,
+            height: baseFrameData.height,
+            intrinsics: baseFrameData.intrinsics,
             dots: filteredDots,
-            trackingState: preLockFrame.trackingState,
-            bearings: nil,
-            correctedPoints: nil,
+            trackingState: baseFrameData.trackingState,
+            bearings: baseFrameData.bearings,
+            correctedPoints: baseFrameData.correctedPoints,
             rspnp: solvedPnP,
             spin: solvedSpin,
             spinDrift: nil,
-            ballRadiusPx: cluster?.radiusPx,
+            ballRadiusPx: ballRadiusPxSmoothed,
             residuals: residuals,
-            flowVectors: preLockFrame.flowVectors
+            flowVectors: baseFrameData.flowVectors
         )
 
-        // ------------------------------------------------------------
-        // 14) AutoCalibration Hook
-        // ------------------------------------------------------------
-        if allowHeavy, let pnp = solvedPnP, pnp.isValid {
+        if finalAllowHeavy, let pnp = solvedPnP, pnp.isValid {
             feedAutoCalibration(with: lockedFrame)
         }
 
@@ -514,7 +558,6 @@ final class VisionPipeline {
     // MARK: - AutoCalibration
 
     private func feedAutoCalibration(with frame: VisionFrameData) {
-        // Placeholder
         _ = frame
     }
 
