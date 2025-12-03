@@ -35,7 +35,7 @@ public final class DotDetector {
 
     // MARK: - Stored properties (internal so extensions can access)
     internal let config: DotDetectorConfig
-    let maxPoints: Int = 512
+    internal let maxPoints: Int = 512
 
     // MARK: - Init
     public init(config: DotDetectorConfig = DotDetectorConfig()) {
@@ -54,11 +54,11 @@ public final class DotDetector {
             return ([], [])
         }
 
-        // STEP 0 — Lock pixel buffer
+        // STEP 0 -- Lock pixel buffer
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        // STEP 1 — Determine full-frame ROI
+        // STEP 1 -- Determine full-frame ROI
         let roiRect = validatedROI(
             frameWidth: frameWidth,
             frameHeight: frameHeight,
@@ -68,14 +68,14 @@ public final class DotDetector {
             return ([], [])
         }
 
-        // STEP 2 — Crop ROI (Y + optional Cb)
+        // STEP 2 -- Crop ROI (Y + optional Cb)
         let crop = cropROI(
             pixelBuffer: pixelBuffer,
             roiFullRect: roiRect
         )
         // crop.yROI, crop.cbROI, crop.roiRect
 
-        // STEP 3 — Blue or Y path selection
+        // STEP 3 -- Blue or Y path selection
         var preprocessedROI: vImage_Buffer = crop.yROI
         var usedBlue = false
 
@@ -95,16 +95,16 @@ public final class DotDetector {
             )
         }
 
-        // STEP 4 — Apply SR
+        // STEP 4 -- Apply SR
         let (srBuffer, scale) = applySR(
             roiBuffer: preprocessedROI,
             roiRect: crop.roiRect
         )
 
-        // STEP 5 — FAST9 detection in SR space
+        // STEP 5 -- FAST9 detection in SR space
         let rawCorners = fast9Detect(srBuffer)
 
-        // STEP 6 — Map to full-frame coordinates
+        // STEP 6 -- Map to full-frame coordinates
         var mapped: [CGPoint] = []
         mapped.reserveCapacity(rawCorners.count)
 
@@ -118,7 +118,7 @@ public final class DotDetector {
             mapped.append(CGPoint(x: px, y: py))
         }
 
-        // STEP 7 — Build VisionDot array
+        // STEP 7 -- Build VisionDot array
         var vDots: [VisionDot] = []
         vDots.reserveCapacity(mapped.count)
 
@@ -133,7 +133,7 @@ public final class DotDetector {
             vDots.append(dot)
         }
 
-        // STEP 8 — Free all temporary buffers
+        // STEP 8 -- Free all temporary buffers
         free(crop.yROI.data)
         if let cb = crop.cbROI {
             free(cb.data)
@@ -152,7 +152,7 @@ public final class DotDetector {
             free(preprocessedROI.data)
         }
 
-        // STEP 9 — Return results
+        // STEP 9 -- Return results
         return (mapped, vDots)
     }
 

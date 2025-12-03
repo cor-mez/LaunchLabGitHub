@@ -1,8 +1,5 @@
 // File: Engine/DotDetector+ROI.swift
 //
-//  DotDetector+ROI.swift
-//  LaunchLab
-//
 //  ROI crop module for DotDetector.
 //  - Extracts a tight Planar8 Y-plane ROI from a CVPixelBuffer.
 //  - Optionally extracts a half-resolution Planar8 Cb-plane ROI
@@ -29,7 +26,7 @@ extension DotDetector {
     ///
     /// - Parameters:
     ///   - pixelBuffer: BiPlanar YUV420 buffer (full-range).
-    ///   - roiFullRect: Desired ROI in full-frame pixel coordinates.
+    ///   - roiFullRect: Desired ROI in full-frame pixel coordinates (or nil for full frame).
     ///
     /// - Returns: ROICropResult with allocated vImage_Buffers and the actual clamped ROI.
     ///            Caller must free yROI.data and cbROI?.data when done.
