@@ -3,161 +3,222 @@
 //  DotDetector.swift
 //  LaunchLab
 //
+//  ORCHESTRATOR-ONLY MODULE
+//  -------------------------
+//  This file performs ZERO heavy image processing.
+//  All real work is delegated to:
+//    • DotDetector+ROI.swift
+//    • DotDetector+Blue.swift
+//    • DotDetector+Y.swift
+//    • DotDetector+SR.swift
+//    • DotDetector+FAST9.swift
+//
+//  Responsibilities:
+//    1. Validate ROI
+//    2. Lock/unlock pixel buffer
+//    3. Crop Y + Cb ROI
+//    4. Choose Blue / Y path
+//    5. Preprocess via Blue or Y
+//    6. Apply SR
+//    7. Run FAST9
+//    8. Map SR → full-frame
+//    9. Build [CGPoint] + [VisionDot]
+//   10. Free all buffers
+//
 
 import Foundation
 import CoreGraphics
 import CoreVideo
 import Accelerate
 
-final class DotDetector {
+public final class DotDetector {
 
-    private let responseThreshold: Float = 0.12
-    private let maxPoints: Int = 256
+    // MARK: - Stored properties (internal so extensions can access)
+    internal let config: DotDetectorConfig
+    let maxPoints: Int = 512
 
-    func detect(in pixelBuffer: CVPixelBuffer) -> [CGPoint] {
-        let planeIndex = 0
-        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, planeIndex)
-        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, planeIndex)
-        let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, planeIndex)
+    // MARK: - Init
+    public init(config: DotDetectorConfig = DotDetectorConfig()) {
+        self.config = config
+    }
 
-        guard width > 8, height > 8 else { return [] }
+    // MARK: - Unified Orchestrator Entry
+    public func detectPoints(
+        pixelBuffer: CVPixelBuffer,
+        roi: CGRect?
+    ) -> ([CGPoint], [VisionDot]) {
 
+        let frameWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let frameHeight = CVPixelBufferGetHeight(pixelBuffer)
+        guard frameWidth >= 16, frameHeight >= 16 else {
+            return ([], [])
+        }
+
+        // STEP 0 — Lock pixel buffer
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        guard let baseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, planeIndex) else {
-            return []
+        // STEP 1 — Determine full-frame ROI
+        let roiRect = validatedROI(
+            frameWidth: frameWidth,
+            frameHeight: frameHeight,
+            roiRaw: roi
+        )
+        if roiRect.isNull || roiRect.isEmpty {
+            return ([], [])
         }
 
-        var src8 = vImage_Buffer(
-            data: baseAddress,
-            height: vImagePixelCount(height),
-            width: vImagePixelCount(width),
-            rowBytes: rowBytes
+        // STEP 2 — Crop ROI (Y + optional Cb)
+        let crop = cropROI(
+            pixelBuffer: pixelBuffer,
+            roiFullRect: roiRect
         )
+        // crop.yROI, crop.cbROI, crop.roiRect
 
-        let floatRowBytes = width * MemoryLayout<Float>.size
-        let byteCount = floatRowBytes * height
+        // STEP 3 — Blue or Y path selection
+        var preprocessedROI: vImage_Buffer = crop.yROI
+        var usedBlue = false
 
-        guard let srcFData = malloc(byteCount),
-              let lapData = malloc(byteCount) else {
-            return []
+        if config.useBlueChannel,
+           var cbBuf = crop.cbROI,   // must be var for inout
+           let normBlue = normalizeBlueROI(cbROI: &cbBuf,
+                                           roiFullRect: crop.roiRect) {
+            preprocessedROI = normBlue
+            usedBlue = true
         }
-        defer {
-            free(srcFData)
-            free(lapData)
-        }
 
-        var srcF = vImage_Buffer(
-            data: srcFData,
-            height: vImagePixelCount(height),
-            width: vImagePixelCount(width),
-            rowBytes: floatRowBytes
-        )
-
-        var lapF = vImage_Buffer(
-            data: lapData,
-            height: vImagePixelCount(height),
-            width: vImagePixelCount(width),
-            rowBytes: floatRowBytes
-        )
-
-        var scale: Float = 1.0 / 255.0
-        var bias: Float = 0.0
-        vImageConvert_Planar8toPlanarF(
-            &src8,
-            &srcF,
-            scale,
-            bias,
-            vImage_Flags(kvImageNoFlags)
-        )
-
-        var blurKernel: [Float] = [
-            1, 2, 1,
-            2, 4, 2,
-            1, 2, 1
-        ]
-        let blurDivisor: Int32 = 16
-
-        blurKernel.withUnsafeMutableBufferPointer { kPtr in
-            vImageConvolve_PlanarF(
-                &srcF,
-                &srcF,
-                nil,
-                0,
-                0,
-                kPtr.baseAddress,
-                3,
-                3,
-                0,
-                vImage_Flags(kvImageEdgeExtend)
+        // If not blue, apply Y preprocessing
+        if !usedBlue {
+            preprocessedROI = preprocessYROI(
+                preprocessedROI,
+                gain: config.preFilterGain
             )
         }
 
-        var lapKernel: [Float] = [
-             0, -1,  0,
-            -1,  4, -1,
-             0, -1,  0
-        ]
-        _ = blurDivisor
+        // STEP 4 — Apply SR
+        let (srBuffer, scale) = applySR(
+            roiBuffer: preprocessedROI,
+            roiRect: crop.roiRect
+        )
 
-        lapKernel.withUnsafeBufferPointer { kPtr in
-            vImageConvolve_PlanarF(
-                &srcF,
-                &lapF,
-                nil,
-                0,
-                0,
-                kPtr.baseAddress,
-                3,
-                3,
-                0,
-                vImage_Flags(kvImageEdgeExtend)
+        // STEP 5 — FAST9 detection in SR space
+        let rawCorners = fast9Detect(srBuffer)
+
+        // STEP 6 — Map to full-frame coordinates
+        var mapped: [CGPoint] = []
+        mapped.reserveCapacity(rawCorners.count)
+
+        let ox = crop.roiRect.origin.x
+        let oy = crop.roiRect.origin.y
+        let invScale = 1.0 / CGFloat(scale)
+
+        for rc in rawCorners {
+            let px = ox + CGFloat(rc.x) * invScale
+            let py = oy + CGFloat(rc.y) * invScale
+            mapped.append(CGPoint(x: px, y: py))
+        }
+
+        // STEP 7 — Build VisionDot array
+        var vDots: [VisionDot] = []
+        vDots.reserveCapacity(mapped.count)
+
+        for (i, p) in mapped.enumerated() {
+            let dot = VisionDot(
+                id: i,
+                position: p,
+                score: rawCorners[i].score,
+                predicted: nil,
+                velocity: nil
             )
+            vDots.append(dot)
         }
 
-        let stride = lapF.rowBytes / MemoryLayout<Float>.size
-        let ptr = lapF.data.assumingMemoryBound(to: Float.self)
-
-        var points: [CGPoint] = []
-        points.reserveCapacity(128)
-
-        let maxY = height - 1
-        let maxX = width - 1
-
-        for y in 1..<maxY {
-            let rowOffset = y * stride
-            for x in 1..<maxX {
-                let idx = rowOffset + x
-                let v = ptr[idx]
-
-                if v < responseThreshold {
-                    continue
-                }
-
-                let left      = ptr[idx - 1]
-                let right     = ptr[idx + 1]
-                let up        = ptr[idx - stride]
-                let down      = ptr[idx + stride]
-                let upLeft    = ptr[idx - stride - 1]
-                let upRight   = ptr[idx - stride + 1]
-                let downLeft  = ptr[idx + stride - 1]
-                let downRight = ptr[idx + stride + 1]
-
-                if v <= left || v <= right ||
-                   v <= up   || v <= down  ||
-                   v <= upLeft || v <= upRight ||
-                   v <= downLeft || v <= downRight {
-                    continue
-                }
-
-                points.append(CGPoint(x: CGFloat(x), y: CGFloat(y)))
-                if points.count >= maxPoints {
-                    return points
-                }
-            }
+        // STEP 8 — Free all temporary buffers
+        free(crop.yROI.data)
+        if let cb = crop.cbROI {
+            free(cb.data)
+        }
+        if scale > 1.0 {
+            free(srBuffer.data)
+        }
+        // Free Blue preprocessed ROI if used
+        if usedBlue,
+           preprocessedROI.data != crop.yROI.data {
+            free(preprocessedROI.data)
+        }
+        // Free Y preprocessed if different
+        if !usedBlue,
+           preprocessedROI.data != crop.yROI.data {
+            free(preprocessedROI.data)
         }
 
-        return points
+        // STEP 9 — Return results
+        return (mapped, vDots)
+    }
+
+    // MARK: - Convenience API (full-frame)
+    public func detect(in pixelBuffer: CVPixelBuffer) -> [CGPoint] {
+        let (pts, _) = detectPoints(pixelBuffer: pixelBuffer, roi: nil)
+        return pts
+    }
+
+    // MARK: - Convenience API (ROI)
+    public func detect(
+        in pixelBuffer: CVPixelBuffer,
+        roi: CGRect?
+    ) -> [CGPoint] {
+        let (pts, _) = detectPoints(pixelBuffer: pixelBuffer, roi: roi)
+        return pts
+    }
+
+    // MARK: - ROI validation helper
+    private func validatedROI(
+        frameWidth: Int,
+        frameHeight: Int,
+        roiRaw: CGRect?
+    ) -> CGRect {
+
+        let full = CGRect(
+            x: 0, y: 0,
+            width: CGFloat(frameWidth),
+            height: CGFloat(frameHeight)
+        )
+
+        var roi = roiRaw ?? full
+        roi = roi.intersection(full)
+
+        if roi.isNull || roi.isEmpty {
+            return full
+        }
+
+        // Enforce minimum dimension 16×16
+        let minSize: CGFloat = 16
+        var x0 = Int(floor(roi.minX))
+        var y0 = Int(floor(roi.minY))
+        var x1 = Int(ceil(roi.maxX))
+        var y1 = Int(ceil(roi.maxY))
+
+        if x1 - x0 < Int(minSize) {
+            let mid = (x0 + x1) / 2
+            x0 = mid - Int(minSize / 2)
+            x1 = mid + Int(minSize / 2)
+        }
+        if y1 - y0 < Int(minSize) {
+            let mid = (y0 + y1) / 2
+            y0 = mid - Int(minSize / 2)
+            y1 = mid + Int(minSize / 2)
+        }
+
+        x0 = max(0, x0)
+        y0 = max(0, y0)
+        x1 = min(frameWidth, x1)
+        y1 = min(frameHeight, y1)
+
+        return CGRect(
+            x: CGFloat(x0),
+            y: CGFloat(y0),
+            width: CGFloat(x1 - x0),
+            height: CGFloat(y1 - y0)
+        )
     }
 }

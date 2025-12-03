@@ -10,7 +10,7 @@ import simd
 struct ARAlignmentGuide: View {
 
     @EnvironmentObject var camera: CameraManager
-    @EnvironmentObject var imuService: IMUService
+    @ObservedObject private var imuService = IMUService.shared
 
     private enum AlignmentStatus {
         case red
@@ -23,7 +23,7 @@ struct ARAlignmentGuide: View {
             ZStack(alignment: .topLeading) {
                 if let frame = camera.latestFrame {
                     let imu = imuService.currentState
-                    let (status, tiltHint, distanceHint) = evaluateStatus(frame: frame, imu: imu)
+                    let (status, primaryHint, secondaryHint) = evaluateStatus(frame: frame, imu: imu)
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
@@ -36,14 +36,14 @@ struct ARAlignmentGuide: View {
                                 .foregroundColor(.white)
                         }
 
-                        if let tiltHint = tiltHint {
-                            Text(tiltHint)
+                        if let primaryHint = primaryHint {
+                            Text(primaryHint)
                                 .font(.system(size: 12, weight: .regular, design: .default))
                                 .foregroundColor(.white.opacity(0.9))
                         }
 
-                        if let distanceHint = distanceHint {
-                            Text(distanceHint)
+                        if let secondaryHint = secondaryHint {
+                            Text(secondaryHint)
                                 .font(.system(size: 12, weight: .regular, design: .default))
                                 .foregroundColor(.white.opacity(0.9))
                         }
@@ -88,6 +88,7 @@ struct ARAlignmentGuide: View {
         }
     }
 
+    /// Returns: (status, primaryHint, secondaryHint)
     private func evaluateStatus(
         frame: VisionFrameData,
         imu: IMUState
@@ -97,8 +98,16 @@ struct ARAlignmentGuide: View {
         let unsafeFrameRate = camera.unsafeFrameRate
         let unsafeThermal = camera.unsafeThermal
 
-        let ballRadius = frame.ballRadiusPx.map { Double($0) } ?? 0.0
-
+        // Ball size estimate in pixels (if BallLock / cluster has seen it)
+        // V1.5: ballRadiusPx removed — use cluster radius when available
+        let ballRadius: Double = {
+            if let residuals = frame.residuals,
+               let roi = residuals.first(where: { $0.id == 100 }) {
+                return Double(roi.weight)   // weight stores ROI radiusPx
+            }
+            return 0.0
+        }()
+        // RS / flicker metrics from residuals
         var shear: Double = 0
         var rowSpan: Double = 0
         var rsConf: Double = 0
@@ -115,60 +124,87 @@ struct ARAlignmentGuide: View {
             }
         }
 
-        // Gravity / tilt
+        // Gravity / tilt: how far are we from "portrait with a bit of roll"
         let g = imu.gravity
         let gNorm = simd_length(g) > 0 ? simd_normalize(g) : SIMD3<Float>(0, -1, 0)
         let targetUp = SIMD3<Float>(0, -1, 0)
         let cosTilt = simd_dot(gNorm, targetUp)
 
-        // Clamp cosTilt to [-1, 1] in Double space and compute degrees.
         let cosTiltClamped = max(-1.0, min(1.0, Double(cosTilt)))
         let tiltRad = acos(cosTiltClamped)
         let tiltDeg = tiltRad * 180.0 / .pi
 
-        let desiredTiltMin: Double = 5.0
+        let desiredTiltMin: Double = 5.0   // roll-ish tilt
         let desiredTiltMax: Double = 25.0
 
-        var tiltHint: String? = nil
+        // ------------------------------------------------------------------
+        // Hints: angle / tilt + distance / placement
+        // ------------------------------------------------------------------
+
+        var tiltHintParts: [String] = []
         if tiltDeg < desiredTiltMin {
-            tiltHint = "Tilt camera more (add roll)"
+            tiltHintParts.append("Tilt camera more (add roll)")
         } else if tiltDeg > desiredTiltMax {
-            tiltHint = "Reduce tilt slightly"
+            tiltHintParts.append("Reduce tilt slightly")
         }
 
-        // Ball radius / distance guidance
+        // RS geometry → "more behind ball" guidance
+        // Very small rowSpan + low shear means too flat / too side-on.
+        if rowSpan > 0 {
+            if rowSpan < 14.0 || shear < 0.08 {
+                tiltHintParts.append("Move phone more behind ball (8–12 ft, 20–35°)")
+            }
+        } else {
+            // No RS yet: give a generic geometry hint once user is staring at the scene.
+            tiltHintParts.append("Place phone 8–12 ft behind ball and 2–4 ft to the side")
+        }
+
+        let primaryHint: String? = tiltHintParts.isEmpty ? nil
+            : tiltHintParts.joined(separator: " · ")
+
+        // Distance / "move closer / farther" guidance from ballRadius if we have it.
+        var secondaryHint: String? = nil
         let idealBallMin: Double = 20.0
         let idealBallMax: Double = 40.0
-        var distanceHint: String? = nil
+
         if ballRadius > 0 {
             if ballRadius < idealBallMin {
-                distanceHint = "Move phone closer"
+                secondaryHint = "Move phone closer (ball should nearly fill the white circle)"
             } else if ballRadius > idealBallMax {
-                distanceHint = "Move phone farther"
+                secondaryHint = "Move phone farther (ball should shrink inside the circle)"
+            } else {
+                secondaryHint = "Distance OK — keep ball centered in the white circle"
             }
+        } else {
+            // We don't yet have a reliable radius → give clear placement instructions.
+            secondaryHint = "Put the 72‑dot ball fully inside the white circle"
         }
+
+        // ------------------------------------------------------------------
+        // Status colour: combine safety + geometry seriousness
+        // ------------------------------------------------------------------
 
         var redReasons: Int = 0
         var yellowReasons: Int = 0
 
-        // Global safety
         if unsafeLighting || unsafeFrameRate || unsafeThermal {
             redReasons += 1
         }
 
-        // RS geometry
-        if rowSpan < 18.0 || shear < 0.10 || rsConf < 0.40 {
-            redReasons += 1
+        if rowSpan > 0 {
+            if rowSpan < 14.0 || shear < 0.05 || rsConf < 0.30 {
+                redReasons += 1
+            } else if rowSpan < 18.0 || shear < 0.10 || rsConf < 0.50 {
+                yellowReasons += 1
+            }
         }
 
-        // Flicker
         if flickerMod > 0.20 {
             redReasons += 1
         } else if flickerMod > 0.12 {
             yellowReasons += 1
         }
 
-        // Distance / ball size
         if ballRadius > 0 {
             if ballRadius < 14.0 || ballRadius > 60.0 {
                 redReasons += 1
@@ -177,7 +213,6 @@ struct ARAlignmentGuide: View {
             }
         }
 
-        // Tilt
         if tiltDeg < 2.0 || tiltDeg > 35.0 {
             redReasons += 1
         } else if tiltDeg < desiredTiltMin || tiltDeg > desiredTiltMax {
@@ -193,6 +228,6 @@ struct ARAlignmentGuide: View {
             status = .green
         }
 
-        return (status, tiltHint, distanceHint)
+        return (status, primaryHint, secondaryHint)
     }
 }

@@ -1,35 +1,24 @@
 // File: Overlays/OverlayView.swift
+//
+//  OverlayView.swift
+//  LaunchLab
+//
 
-import UIKit
+import SwiftUI
 
-final class OverlayView: UIView {
+/// Simple wrapper for future overlay-related developer tools.
+/// Currently unused in the main flow but available for expansion.
+struct OverlayView: View {
 
-    private let layers: [BaseOverlayLayer]
-
-    init(layers: [BaseOverlayLayer]) {
-        self.layers = layers
-        super.init(frame: .zero)
-        isOpaque = false
-
-        // Add layers to the view
-        for layer in layers {
-            layer.frame = bounds           // <-- initial sizing
-            self.layer.addSublayer(layer)
+    var body: some View {
+        VStack {
+            Text("Overlay Debug")
+                .font(.headline)
+            Text("Use DebugHUD → Developer Tools → Dot Test Mode for dot inspection.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .padding(.top, 4)
         }
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-
-        // CRITICAL FIX:
-        // Resize all overlay layers to match the view's bounds EVERY frame.
-        for layer in layers {
-            layer.frame = bounds
-            layer.setNeedsDisplay()       // REQUIRED to trigger draw(in:)
-        }
+        .padding()
     }
 }

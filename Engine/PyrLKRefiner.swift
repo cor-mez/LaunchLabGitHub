@@ -3,11 +3,6 @@
 //  LaunchLab
 //
 //  Stateless CPU-based Lucas–Kanade refinement.
-//  Inputs: VisionDots + two luma pixel buffers
-//  Outputs: refined VisionDots + raw flow vectors.
-//
-//  Window radius = 4 (9×9 window)
-//  Iterations    = 8
 //
 
 import Foundation
@@ -17,24 +12,19 @@ import simd
 
 public final class PyrLKRefiner {
 
-    private let windowRadius: Int = 4       // 9×9 window
+    private let windowRadius: Int = 4
     private let maxIterations: Int = 8
     private let epsilon: Float = 0.01
 
     public init() {}
 
-    // ------------------------------------------------------------
-    // MARK: - Public API
-    // ------------------------------------------------------------
     public func refine(
         dots: [VisionDot],
         prevBuffer: CVPixelBuffer,
         currBuffer: CVPixelBuffer
     ) -> ([VisionDot], [SIMD2<Float>]) {
 
-        guard !dots.isEmpty else {
-            return (dots, [])
-        }
+        guard !dots.isEmpty else { return (dots, []) }
 
         CVPixelBufferLockBaseAddress(prevBuffer, .readOnly)
         CVPixelBufferLockBaseAddress(currBuffer, .readOnly)
@@ -66,7 +56,7 @@ public final class PyrLKRefiner {
         flows.reserveCapacity(dots.count)
 
         for dot in dots {
-            let (refined, flow) = refineDot(
+            let (refined, flow) = refineOne(
                 dot: dot,
                 prevLuma: prevLuma,
                 currLuma: currLuma,
@@ -82,11 +72,8 @@ public final class PyrLKRefiner {
         return (refinedDots, flows)
     }
 
-    // ============================================================
-    // MARK: - Per-Dot LK Refinement
-    // ============================================================
-
-    private func refineDot(
+    // MARK: - Per-Dot refinement
+    private func refineOne(
         dot: VisionDot,
         prevLuma: UnsafePointer<UInt8>,
         currLuma: UnsafePointer<UInt8>,
@@ -106,7 +93,6 @@ public final class PyrLKRefiner {
 
         for _ in 0..<maxIterations {
 
-            // Window must be fully inside image
             if Int(x) - r < 1 || Int(x) + r >= width - 1 ||
                Int(y) - r < 1 || Int(y) + r >= height - 1 {
                 break
@@ -120,10 +106,8 @@ public final class PyrLKRefiner {
                     let px = Int(x) + wx
                     let py = Int(y) + wy
 
-                    // Prev intensity
                     let I1 = Float(prevLuma[py * prevStride + px])
 
-                    // Spatial gradients (prev frame)
                     let Ix = 0.5 * (
                         Float(prevLuma[py * prevStride + (px + 1)]) -
                         Float(prevLuma[py * prevStride + (px - 1)])
@@ -133,24 +117,22 @@ public final class PyrLKRefiner {
                         Float(prevLuma[(py - 1) * prevStride + px])
                     )
 
-                    // Current intensity
                     let I2 = Float(currLuma[py * currStride + px])
                     let It = I2 - I1
 
                     let g = SIMD2<Float>(Ix, Iy)
+
                     G += simd_float2x2(
                         SIMD2<Float>(g.x * g.x, g.x * g.y),
                         SIMD2<Float>(g.y * g.x, g.y * g.y)
                     )
+
                     b += g * It
                 }
             }
 
-            // Solve G * d = -b
             let det = G[0,0] * G[1,1] - G[0,1] * G[1,0]
-            if abs(det) < 1e-6 {
-                break
-            }
+            if abs(det) < 1e-6 { break }
 
             let inv = simd_float2x2(
                 SIMD2<Float>( G[1,1], -G[0,1]),
@@ -162,9 +144,7 @@ public final class PyrLKRefiner {
             x += d.x
             y += d.y
 
-            if simd_length(d) < epsilon {
-                break
-            }
+            if simd_length(d) < epsilon { break }
         }
 
         let refinedPos = CGPoint(x: CGFloat(x), y: CGFloat(y))
@@ -173,8 +153,9 @@ public final class PyrLKRefiner {
         let refinedDot = VisionDot(
             id: dot.id,
             position: refinedPos,
-            predicted: dot.predicted,   // nil per DotTracker contract
-            velocity: dot.velocity      // unchanged
+            score: dot.score,      // ← KEEP SCORE
+            predicted: dot.predicted,
+            velocity: dot.velocity
         )
 
         return (refinedDot, flow)

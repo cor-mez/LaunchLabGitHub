@@ -1,29 +1,32 @@
 //
 //  DotOverlayLayer.swift
-//  LaunchLab
 //
 
 import UIKit
 
 final class DotOverlayLayer: BaseOverlayLayer {
 
-    private var dots: [VisionDot] = []
+    private var mapper: OverlayMapper?
+    private var points: [CGPoint] = []
 
-    override func updateWithFrame(_ frame: VisionFrameData) {
-        self.dots = frame.dots
+    override func assignMapper(_ mapper: OverlayMapper) {
+        self.mapper = mapper
     }
 
-     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
-        ctx.setLineWidth(2.0)
-        ctx.setStrokeColor(UIColor.systemYellow.cgColor)
+    override func updateWithFrame(_ frame: VisionFrameData) {
+        points = frame.dots.map { $0.position }
+        setNeedsDisplay()
+    }
 
-        for d in dots {
-            let p = mapper.mapCGPoint(CGPoint(x: CGFloat(d.position.x),
-                                              y: CGFloat(d.position.y)))
+    override func draw(in ctx: CGContext) {
+        guard let mapper = mapper else { return }
+        guard !points.isEmpty else { return }
 
-            let r: CGFloat = 4
-            let rect = CGRect(x: p.x - r, y: p.y - r, width: r*2, height: r*2)
-            ctx.strokeEllipse(in: rect)
+        ctx.setFillColor(UIColor.yellow.cgColor)
+        for p in points {
+            let v = mapper.mapCGPoint(p)
+            let r: CGFloat = 2.0
+            ctx.fillEllipse(in: CGRect(x: v.x - r, y: v.y - r, width: 2*r, height: 2*r))
         }
     }
 }

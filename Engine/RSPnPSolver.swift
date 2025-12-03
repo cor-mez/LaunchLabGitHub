@@ -27,21 +27,19 @@ final class RSPnPSolver {
     /// Assumed frame interval for launch captures (240 fps).
     private let frameInterval: Float = 1.0 / 240.0
 
-    // MARK: - Public API
-
-    /// Main entry: continuous-time SE(3) with flicker-weighted residuals.
     func solve(
         window: RSWindow,
         intrinsics: CameraIntrinsics,
         rowGradient: [Float]
     ) -> RSPnPResult {
 
-        let identityR = simd_float3x3(diagonal: SIMD3<Float>(1, 1, 1))
+        // Identity rotation (frozen V1.5)
+        let R = simd_float3x3(diagonal: SIMD3<Float>(1, 1, 1))
         let zero3 = SIMD3<Float>(repeating: 0)
 
         func invalidResult(residual: Float = .greatestFiniteMagnitude) -> RSPnPResult {
             return RSPnPResult(
-                R: identityR,
+                R: R,
                 t: zero3,
                 w: zero3,
                 v: zero3,
@@ -51,90 +49,43 @@ final class RSPnPSolver {
         }
 
         let frames = window.frames
-        guard frames.count == 3 else {
-            return invalidResult()
-        }
+        guard frames.count == 3 else { return invalidResult() }
 
-        // --------------------------------------------------------
-        // 1) Depth estimate from ballRadiusPx (frozen rule)
-        //    depth ≈ (realBallRadius / observedBallRadiusPx) * fx
-        // --------------------------------------------------------
-        var depths: [Float] = []
-        depths.reserveCapacity(frames.count)
+        // Temporary constant depth assumption
+        let nominalDepth: Float = 2.5
 
-        for frame in frames {
-            guard let rPx = frame.ballRadiusPx, rPx > 0 else { continue }
-            let depth = (realBallRadius / Float(rPx)) * intrinsics.fx
-            if depth.isFinite, depth > 0 {
-                depths.append(depth)
-            }
-        }
-
-        guard !depths.isEmpty else {
-            return invalidResult()
-        }
-
-        let depth = depths.reduce(0, +) / Float(depths.count)
-
-        // --------------------------------------------------------
-        // 2) Ball center in 3D for each frame
-        // --------------------------------------------------------
+        // -----------------------------------------
+        // 2D → 3D Backprojection of ball center
+        // -----------------------------------------
         var centers3D: [SIMD3<Float>] = []
-        centers3D.reserveCapacity(frames.count)
+        centers3D.reserveCapacity(3)
 
         for frame in frames {
-            guard
-                let rPx = frame.ballRadiusPx,
-                rPx > 0,
-                let centerPx = estimateBallCenter2D(from: frame)
-            else {
-                continue
+            guard let centerPx = estimateBallCenter2D(from: frame) else {
+                return invalidResult()
             }
 
-            let depthFrame = (realBallRadius / Float(rPx)) * intrinsics.fx
-            let center3D = backProject(
-                centerPx: centerPx,
-                depth: depthFrame,
-                intrinsics: intrinsics
-            )
-            if allFinite(center3D) {
-                centers3D.append(center3D)
-            }
+            let c3 = backProject(centerPx: centerPx,
+                                 depth: nominalDepth,
+                                 intrinsics: intrinsics)
+
+            if !allFinite(c3) { return invalidResult() }
+            centers3D.append(c3)
         }
 
-        guard centers3D.count == frames.count else {
-            return invalidResult()
-        }
+        guard centers3D.count == 3 else { return invalidResult() }
 
-        // Use middle frame center as reference translation.
-        let t = centers3D[centers3D.count / 2]
+        // Translation = middle frame center
+        let t = centers3D[1]
 
-        // --------------------------------------------------------
-        // 3) Approximate linear velocity v from 3D center track
-        // --------------------------------------------------------
-        let v: SIMD3<Float>
-        if centers3D.count >= 3 {
-            // Central difference over 3 frames.
-            let p0 = centers3D[0]
-            let p2 = centers3D[2]
-            let dt = 2.0 * frameInterval
-            v = (p2 - p0) / dt
-        } else if centers3D.count == 2 {
-            let p0 = centers3D[0]
-            let p1 = centers3D[1]
-            v = (p1 - p0) / frameInterval
-        } else {
-            v = zero3
-        }
+        // Velocity = central finite difference
+        let dt: Float = 1.0 / 240.0
+        let v = (centers3D[2] - centers3D[0]) / (2 * dt)
 
-        // For V1.5 we keep rotation static and omit angular velocity
-        // refinement; RS terms still exist in the projection model.
-        let R = identityR
+        // No rotation solve yet
         let w = zero3
 
-        // --------------------------------------------------------
-        // 4) Compute RS-aware flicker-weighted reprojection residual.
-        // --------------------------------------------------------
+        // Rolling-shutter weighted residual
         let residual = computeResidual(
             frames: frames,
             intrinsics: intrinsics,
@@ -145,19 +96,15 @@ final class RSPnPSolver {
             rowGradient: rowGradient
         )
 
-        // --------------------------------------------------------
-        // 5) Validity checks (frozen rules)
-        // --------------------------------------------------------
-        let hasNaN =
+        // Validity
+        let invalid =
             !residual.isFinite ||
             !allFinite(t) ||
             !allFinite(v) ||
-            depth <= 0 ||
+            nominalDepth <= 0 ||
             t.z <= 0
 
-        let isValid = !hasNaN &&
-            residual < maxValidResidual &&
-            frames.count == 3
+        let isValid = !invalid && residual < maxValidResidual
 
         return RSPnPResult(
             R: R,

@@ -107,7 +107,7 @@ final class RawSessionLogger {
                 imuAttitude: [q.x, q.y, q.z, q.w],
                 iso: exposureISO,
                 exposureDuration: exposureDuration,
-                ballRadiusPx: frame.ballRadiusPx.map { Float($0) },
+                ballRadiusPx: nil,
                 ballLockState: ballLock?.stateCode,
                 ballLockQuality: ballLock?.quality,
                 rsShear: rs?.shear,

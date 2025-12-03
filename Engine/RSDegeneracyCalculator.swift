@@ -10,15 +10,28 @@ import Foundation
 import CoreGraphics
 import simd
 
-/// Raw per-frame metrics used to decide RS suitability.
+/// Inputs to the RS-degeneracy check for a single frame.
 struct RSDegeneracyInput {
-    var shearSlope: CGFloat
-    var rowSpanPx: CGFloat
-    var blurStreakPx: CGFloat
-    var phaseRatio: CGFloat
-    var ballPx: CGFloat
-    var isPortrait: Bool
-    var flickerModulation: CGFloat
+    /// Estimated shear slope in pixels per row (|dx / dy|).
+    let shearSlope: CGFloat
+
+    /// Vertical extent of usable ball signal (px).
+    let rowSpanPx: CGFloat
+
+    /// Estimated motion-blur streak length (px).
+    let blurStreakPx: CGFloat
+
+    /// Pattern phase ratio (used for aliasing / symmetry hints).
+    let phaseRatio: CGFloat
+
+    /// Apparent ball radius in pixels.
+    let ballPx: CGFloat
+
+    /// Flicker modulation metric (0–1-ish).
+    let flickerModulation: CGFloat
+
+    /// True if device is currently in Portrait orientation.
+    let isPortrait: Bool
 }
 
 /// Final degeneracy decision for the current frame.
@@ -44,6 +57,13 @@ struct WagglePlacementHint {
 struct RSDegeneracyCalculator {
 
     // MARK: - Public API
+
+    /// Convenience overload when you don't have a flicker-unsafe flag yet.
+    func evaluate(
+        _ input: RSDegeneracyInput
+    ) -> RSDegeneracyResult {
+        evaluate(input, isFlickerUnsafe: false)
+    }
 
     func evaluate(
         _ input: RSDegeneracyInput,
@@ -144,7 +164,7 @@ struct RSDegeneracyCalculator {
             return WagglePlacementHint(
                 isValid: false,
                 shearSlope: shearSlope,
-                message: "Camera tilt too flat for RS solve. Increase roll tilt (10–15°) and keep the phone in portrait behind and slightly inside the ball."
+                message: "Camera tilt too flat for RS solve...keep the phone in portrait behind and slightly inside the ball."
             )
         } else {
             return WagglePlacementHint(

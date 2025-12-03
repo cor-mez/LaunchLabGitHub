@@ -1,89 +1,65 @@
-// File: Engine/CameraPreviewView.swift
+//
 //  CameraPreviewView.swift
 //  LaunchLab
 //
 
-import SwiftUI
+import UIKit
 import AVFoundation
 
-/// SwiftUI wrapper that owns a PreviewView (UIKit)
-/// and syncs VisionPipeline → CALayer overlays.
-struct CameraPreviewView: UIViewRepresentable {
+/// The core camera rendering view.
+/// Displays the live camera feed using AVCaptureVideoPreviewLayer.
+/// Supports overlay layers (dots, ROI, RS residuals, spin, debug).
+final class CameraPreviewView: UIView {
 
-    @EnvironmentObject private var camera: CameraManager
-    @EnvironmentObject private var config: OverlayConfig   // overlay toggles
+    // MARK: - Preview Layer
 
-    let session: AVCaptureSession
-    let intrinsics: CameraIntrinsics
-
-    // ----------------------------------------------------------
-    // MARK: - Coordinator
-    // ----------------------------------------------------------
-    class Coordinator {
-        weak var preview: PreviewView?
-        var overlays: [BaseOverlayLayer] = []
-
-        func updateFrame(_ frame: VisionFrameData) {
-            guard let preview = preview else { return }
-
-            // Build mapper each frame (safe + cheap)
-            let mapper = OverlayMapper(
-                bufferWidth: frame.width,
-                bufferHeight: frame.height,
-                viewSize: preview.bounds.size,
-                previewLayer: preview.videoPreviewLayer
-            )
-
-            // Push frame into overlays
-            for layer in overlays {
-                layer.assignMapper(mapper)
-                layer.updateWithFrame(frame)
-                DispatchQueue.main.async {
-                    layer.setNeedsDisplay()
-                }
-            }
-        }
+    override class var layerClass: AnyClass {
+        AVCaptureVideoPreviewLayer.self
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+    var previewLayer: AVCaptureVideoPreviewLayer {
+        return layer as! AVCaptureVideoPreviewLayer
     }
 
-    // ----------------------------------------------------------
-    // MARK: - UIView creation
-    // ----------------------------------------------------------
-    func makeUIView(context: Context) -> PreviewView {
-        let preview = PreviewView(session: session)
+    // MARK: - Overlay Layers
 
-        preview.videoPreviewLayer.videoGravity = .resizeAspectFill
-        preview.videoPreviewLayer.connection?.videoOrientation = .portrait
+    private var overlays: [BaseOverlayLayer] = []
 
-        context.coordinator.preview = preview
+    // MARK: - Init
 
-        // Install overlays based on config toggles
-        let overlays = OverlayCoordinator.makeOverlays(config: config)
-        preview.installOverlayLayers(overlays)
-        context.coordinator.overlays = overlays
-
-        return preview
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
     }
 
-    // ----------------------------------------------------------
-    // MARK: - UIView updates
-    // ----------------------------------------------------------
-    func updateUIView(_ preview: PreviewView, context: Context) {
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
 
-        // Keep session updated
-        preview.session = session
+    private func configure() {
+        backgroundColor = .black
+        previewLayer.videoGravity = .resizeAspectFill
+    }
 
-        // Rebuild overlays if toggles changed
-        let overlays = OverlayCoordinator.makeOverlays(config: config)
-        preview.installOverlayLayers(overlays)
-        context.coordinator.overlays = overlays
+    // MARK: - Attach
 
-        // Push latest frame
-        if let frame = camera.latestFrame {
-            context.coordinator.updateFrame(frame)
+    func attachSession(_ session: AVCaptureSession) {
+        previewLayer.session = session
+    }
+
+    func addOverlay(_ layer: BaseOverlayLayer) {
+        layer.frame = bounds
+        overlays.append(layer)
+        self.layer.addSublayer(layer)
+        layer.setNeedsDisplay()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for o in overlays {
+            o.frame = bounds
+            o.setNeedsDisplay()
         }
     }
 }

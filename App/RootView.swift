@@ -12,33 +12,28 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            switch camera.authorizationStatus {
-
-            case .authorized:
+            if camera.isAuthorized {
                 ZStack {
-                    // Camera feed + CALayer overlays
-                    CameraPreviewView(
-                        session: camera.cameraSession,
-                        intrinsics: camera.intrinsics
+                    CameraPreviewContainer(
+                        camera: camera,
+                        dotLayer: DotOverlayLayer(),
+                        trackingLayer: nil,
+                        reprojectionLayer: nil
                     )
-                    .environmentObject(camera)
                     .edgesIgnoringSafeArea(.all)
 
-                    // SwiftUI Debug HUD (no arguments now)
                     DebugHUDView()
                         .padding()
                         .frame(maxWidth: .infinity,
                                maxHeight: .infinity,
                                alignment: .topLeading)
-                        // We WANT taps here for the BallLock tuning button,
-                        // so do NOT disable hit testing.
                 }
 
-            case .notDetermined:
+            } else if camera.authorizationStatus == .notDetermined {
                 ProgressView("Requesting Camera Access…")
                     .task { await camera.checkAuth() }
 
-            case .denied, .restricted:
+            } else {
                 VStack(spacing: 16) {
                     Text("Camera access is required to use LaunchLab.")
                         .font(.headline)
@@ -50,19 +45,18 @@ struct RootView: View {
                         }
                     }
                 }
-
-            @unknown default:
-                EmptyView()
             }
         }
         .onAppear {
-            if camera.authorizationStatus == .authorized {
-                camera.start()
+            if camera.isAuthorized {
+                camera.startSession()
             }
         }
         .onChange(of: camera.authorizationStatus) { newStatus in
             if newStatus == .authorized {
-                camera.start()
+                camera.startSession()
+            } else {
+                camera.stopSession()
             }
         }
     }

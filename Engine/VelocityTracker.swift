@@ -30,9 +30,6 @@ public final class VelocityTracker {
         dt: Double
     ) -> [VisionDot] {
 
-        // We ignore dt for now and just use raw displacement.
-        // This keeps vectors easy to reason about visually.
-
         // Build the previous-position map
         lastPositions.removeAll(keepingCapacity: true)
         for dot in previousDots {
@@ -43,6 +40,7 @@ public final class VelocityTracker {
         output.reserveCapacity(currentDots.count)
 
         for dot in currentDots {
+
             if let prevPos = lastPositions[dot.id] {
 
                 let dx = dot.position.x - prevPos.x
@@ -54,17 +52,19 @@ public final class VelocityTracker {
                     VisionDot(
                         id: dot.id,
                         position: dot.position,
+                        score: dot.score,        // ← FIX
                         predicted: dot.predicted,
                         velocity: v
                     )
                 )
 
             } else {
-                // No previous position → velocity = nil
+
                 output.append(
                     VisionDot(
                         id: dot.id,
                         position: dot.position,
+                        score: dot.score,         // ← FIX
                         predicted: dot.predicted,
                         velocity: nil
                     )

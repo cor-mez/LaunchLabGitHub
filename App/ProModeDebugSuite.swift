@@ -39,7 +39,17 @@ final class ProModeDebugSuiteLayer: BaseOverlayLayer {
 
         setNeedsDisplay()
     }
+    // TEMP ADAPTERS — make new VisionFrameData compatible with old overlay methods
 
+    // TEMP ADAPTERS — match old overlay expectations
+    struct RSBearing {
+        let rowIndex: Float
+    }
+
+    struct RSCorrectedPoint {
+        let corrected: CGPoint
+    }
+    
     // MARK: - Draw
      func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard debugMode else { return }
@@ -52,13 +62,17 @@ final class ProModeDebugSuiteLayer: BaseOverlayLayer {
             drawFlowVectors(ctx, flow: flow)
         }
 
-        if let b = frame.bearings {
-            drawRSTiming(ctx, bearings: b)
-        }
+         if let b = frame.bearings {
+             let wrapped = b.map { RSBearing(rowIndex: $0) }
+             drawRSTiming(ctx, bearings: wrapped)
+         }
 
-        if let r = frame.residuals, let c = frame.correctedPoints {
-            drawRPERays(ctx, residuals: r, corrected: c)
-        }
+         if let r = frame.residuals,
+            let c = frame.correctedPoints {
+
+             let wrapped = c.map { RSCorrectedPoint(corrected: $0) }
+             drawRPERays(ctx, residuals: r, corrected: wrapped)
+         }
 
         if let spin = frame.spin {
             drawSpinAxis(ctx, spin: spin)

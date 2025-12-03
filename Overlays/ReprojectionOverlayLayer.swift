@@ -1,19 +1,10 @@
-//
-//  ReprojectionOverlayLayer.swift
-//  LaunchLab
-//
-//  Batch-7 Fully Corrected Version
-//  • Stores VisionFrameData in local property
-//  • Never assigns to CALayer.frame
-//  • Draws corrected points, predicted points, and error rays
-//
+// File: Overlays/ReprojectionOverlayLayer.swift
 
 import UIKit
 import QuartzCore
 
 final class ReprojectionOverlayLayer: BaseOverlayLayer {
 
-    // Store latest VisionFrameData safely
     private var latestFrame: VisionFrameData?
 
     override func updateWithFrame(_ frame: VisionFrameData) {
@@ -21,7 +12,7 @@ final class ReprojectionOverlayLayer: BaseOverlayLayer {
         setNeedsDisplay()
     }
 
-     func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
+    func drawOverlay(in ctx: CGContext, mapper: OverlayMapper) {
         guard let frame = latestFrame else { return }
         guard let corrected = frame.correctedPoints else { return }
         guard let residuals = frame.residuals else { return }
@@ -33,16 +24,16 @@ final class ReprojectionOverlayLayer: BaseOverlayLayer {
         ctx.setShouldAntialias(true)
 
         for i in 0..<count {
-            let cp = corrected[i]
+            let cp = corrected[i]      // cp is a CGPoint
             let r  = residuals[i].error
 
             // Corrected point → view
-            let detected = mapper.mapCGPoint(cp.corrected)
+            let detected = mapper.mapCGPoint(cp)
 
-            // Predicted = corrected + residual
+            // Predicted = cp + residual
             let predictedPx = CGPoint(
-                x: cp.corrected.x + CGFloat(r.x),
-                y: cp.corrected.y + CGFloat(r.y)
+                x: cp.x + CGFloat(r.x),
+                y: cp.y + CGFloat(r.y)
             )
             let predicted = mapper.mapCGPoint(predictedPx)
 

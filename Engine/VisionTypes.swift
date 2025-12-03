@@ -2,11 +2,9 @@
 //  VisionTypes.swift
 //  LaunchLab
 //
-//  Frozen Architecture -- v1.1 (+ ballRadiusPx field)
+//  Frozen Architecture -- v1.2 (+ VisionDot.score, + ballRadiusPx)
 //
 //  Defines ALL cross-module data contracts.
-//  Now includes `ballRadiusPx` so RS-PnP V1.5 can estimate depth.
-//
 
 import Foundation
 import CoreGraphics
@@ -45,21 +43,26 @@ public struct CameraIntrinsics: Sendable {
 }
 
 // ============================================================
-// MARK: - Vision Dot
+// MARK: - Vision Dot  (UPDATED — now supports FAST9 score)
 // ============================================================
 
 public struct VisionDot: Identifiable, Sendable {
     public let id: Int
     public let position: CGPoint
+    public let score: Float           // ← NEW
     public let predicted: CGPoint?
     public let velocity: CGVector?
 
-    public init(id: Int,
-                position: CGPoint,
-                predicted: CGPoint? = nil,
-                velocity: CGVector? = nil) {
+    public init(
+        id: Int,
+        position: CGPoint,
+        score: Float,
+        predicted: CGPoint? = nil,
+        velocity: CGVector? = nil
+    ) {
         self.id = id
         self.position = position
+        self.score = score
         self.predicted = predicted
         self.velocity = velocity
     }
@@ -110,11 +113,11 @@ public struct RPEResidual: Sendable {
 
 public struct RSPnPResult: Sendable {
 
-    public let R: simd_float3x3        // rotation matrix (camera←ball)
-    public let t: SIMD3<Float>         // translation (camera coords)
-    public let w: SIMD3<Float>         // angular velocity (rad/s)
-    public let v: SIMD3<Float>         // translational velocity (m/s)
-    public let residual: Float         // LM residual
+    public let R: simd_float3x3
+    public let t: SIMD3<Float>
+    public let w: SIMD3<Float>
+    public let v: SIMD3<Float>
+    public let residual: Float
     public let isValid: Bool
 
     public init(
@@ -139,7 +142,6 @@ public struct RSPnPResult: Sendable {
 // ============================================================
 
 public struct BallisticsResult: Sendable {
-
     public let apexHeight: Float
     public let carryDistance: Float
     public let totalDistance: Float
@@ -155,9 +157,9 @@ public struct BallisticsResult: Sendable {
 // ============================================================
 
 public struct SpinResult: Sendable {
-    public let omega: SIMD3<Float>   // rad/s
+    public let omega: SIMD3<Float>
     public let rpm: Float
-    public let axis: SIMD3<Float>    // unit vector
+    public let axis: SIMD3<Float>
     public let confidence: Float
 }
 
@@ -185,11 +187,21 @@ public struct CalibrationResult: Sendable {
     public let worldAlignmentR: simd_float3x3
 }
 
-// ============================================================
-// MARK: - Vision Frame Data  (UPDATED)
-// ============================================================
+// MARK: - VisionFrameData
 
-public struct VisionFrameData: Sendable {
+public struct VisionFrameData {
+
+    // ======================================================
+    // NEW: RAW FAST9 POINTS
+    // ======================================================
+    /// Raw FAST9 corner detections in full-frame pixel coords.
+    /// Populated BEFORE BallLock filtering.
+    public let rawDetectionPoints: [CGPoint]?
+
+    // ======================================================
+    // EXISTING: FILTERED DOTS (ball-only once locked)
+    // ======================================================
+    public let dots: [VisionDot]
 
     public let timestamp: Double
     public let pixelBuffer: CVPixelBuffer
@@ -197,59 +209,48 @@ public struct VisionFrameData: Sendable {
     public let height: Int
     public let intrinsics: CameraIntrinsics
 
-    public let dots: [VisionDot]
     public let trackingState: DotTrackingState
-
-    // Rolling shutter (optional)
-    public let bearings: [RSBearing]?
-    public let correctedPoints: [RSCorrectedPoint]?
-
-    // Pose
+    public let bearings: [Float]?
+    public let correctedPoints: [CGPoint]?
     public let rspnp: RSPnPResult?
-
-    // Spin
     public let spin: SpinResult?
     public let spinDrift: SpinDriftMetrics?
-
-    // NEW -- required for RS-PnP V1.5 depth estimation
-    public let ballRadiusPx: CGFloat?
-
-    // Residuals
     public let residuals: [RPEResidual]?
-
-    // LK flows (for overlays + spin)
     public let flowVectors: [SIMD2<Float>]?
 
+    // ======================================================
+    // INIT UPDATED FOR RAW FAST9 SUPPORT
+    // ======================================================
     public init(
+        rawDetectionPoints: [CGPoint]? = nil,
+        dots: [VisionDot],
         timestamp: Double,
         pixelBuffer: CVPixelBuffer,
         width: Int,
         height: Int,
         intrinsics: CameraIntrinsics,
-        dots: [VisionDot],
         trackingState: DotTrackingState,
-        bearings: [RSBearing]? = nil,
-        correctedPoints: [RSCorrectedPoint]? = nil,
-        rspnp: RSPnPResult? = nil,
-        spin: SpinResult? = nil,
-        spinDrift: SpinDriftMetrics? = nil,
-        ballRadiusPx: CGFloat? = nil,          // NEW
-        residuals: [RPEResidual]? = nil,
-        flowVectors: [SIMD2<Float>]? = nil
+        bearings: [Float]?,
+        correctedPoints: [CGPoint]?,
+        rspnp: RSPnPResult?,
+        spin: SpinResult?,
+        spinDrift: SpinDriftMetrics?,
+        residuals: [RPEResidual]?,
+        flowVectors: [SIMD2<Float>]?
     ) {
+        self.rawDetectionPoints = rawDetectionPoints
+        self.dots = dots
         self.timestamp = timestamp
         self.pixelBuffer = pixelBuffer
         self.width = width
         self.height = height
         self.intrinsics = intrinsics
-        self.dots = dots
         self.trackingState = trackingState
         self.bearings = bearings
         self.correctedPoints = correctedPoints
         self.rspnp = rspnp
         self.spin = spin
         self.spinDrift = spinDrift
-        self.ballRadiusPx = ballRadiusPx
         self.residuals = residuals
         self.flowVectors = flowVectors
     }

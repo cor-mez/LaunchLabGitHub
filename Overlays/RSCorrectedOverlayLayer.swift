@@ -13,9 +13,7 @@ final class RSCorrectedOverlayLayer: BaseOverlayLayer {
         corrected.removeAll(keepingCapacity: true)
 
         if let pts = frame.correctedPoints {
-            for p in pts {
-                corrected.append(p.corrected)   // <-- FIX
-            }
+            corrected = pts   // each element is already a CGPoint
         }
     }
 
