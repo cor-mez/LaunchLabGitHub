@@ -8,49 +8,26 @@ import AVFoundation
 import CoreImage
 import CoreVideo
 import CoreMedia
-import ImageIO        // ← REQUIRED for kCGImagePropertyCameraIntrinsicMatrix
+import ImageIO
 import SwiftUI
 
 @MainActor
 final class CameraManager: NSObject, ObservableObject {
 
-    // ============================================================
-    // MARK: - Published (SwiftUI-visible)
-    // ============================================================
-
     @Published var latestPixelBuffer: CVPixelBuffer?
     @Published var latestFrame: VisionFrameData?
 
-    /// Camera authorization for RootView
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
-    public var isAuthorized: Bool { authorizationStatus == .authorized }
-
-    /// BallLock tuning (UI-driven)
     @Published var ballLockConfig: BallLockConfig = BallLockConfig()
-
-    /// Safety state flags
     @Published var unsafeLighting: Bool = false
     @Published var unsafeFrameRate: Bool = false
     @Published var unsafeThermal: Bool = false
 
-    // ============================================================
-    // MARK: - Callbacks
-    // ============================================================
-
-    /// Called whenever the camera reports new buffer size (width/height)
     var onFrameDimensionsChanged: ((Int, Int) -> Void)?
-
-    // ============================================================
-    // MARK: - AVCapture Session
-    // ============================================================
 
     let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "LaunchLab.Camera.Session")
-
-    // ============================================================
-    // MARK: - Vision Pipeline
-    // ============================================================
 
     private var pipeline: VisionPipeline!
 
@@ -58,10 +35,6 @@ final class CameraManager: NSObject, ObservableObject {
         super.init()
         self.pipeline = VisionPipeline(ballLockConfig: ballLockConfig)
     }
-
-    // ============================================================
-    // MARK: - Authorization
-    // ============================================================
 
     func checkAuth() async {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
@@ -72,10 +45,6 @@ final class CameraManager: NSObject, ObservableObject {
             authorizationStatus = granted ? .authorized : .denied
         }
     }
-
-    // ============================================================
-    // MARK: - Session Setup
-    // ============================================================
 
     func startSession() {
         guard isAuthorized else { return }
@@ -103,27 +72,26 @@ final class CameraManager: NSObject, ObservableObject {
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .hd1920x1080
 
-        // Camera device
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                    for: .video,
                                                    position: .back)
         else {
-            print("❌ No back camera available.")
+            print("❌ No back camera.")
             captureSession.commitConfiguration()
             return
         }
 
-        // Device Input
+        // Camera input
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if captureSession.canAddInput(input) {
                 captureSession.addInput(input)
             }
         } catch {
-            print("❌ Failed to create AVCaptureDeviceInput:", error)
+            print("❌ Input error:", error)
         }
 
-        // Video Output
+        // Video output
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String:
@@ -137,7 +105,6 @@ final class CameraManager: NSObject, ObservableObject {
             captureSession.addOutput(videoOutput)
         }
 
-        // Orientation
         if let conn = videoOutput.connection(with: .video),
            conn.isVideoOrientationSupported {
             conn.videoOrientation = .portrait
@@ -147,47 +114,36 @@ final class CameraManager: NSObject, ObservableObject {
     }
 }
 
-
-// ============================================================================
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
-// ============================================================================
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
-    func captureOutput(_ output: AVCaptureOutput,
-                       didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection)
-    {
-        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
+                                  didOutput sampleBuffer: CMSampleBuffer,
+                                  from connection: AVCaptureConnection) {
 
-        // -----------------------------------------------------
-        // Notify overlays of buffer dimension changes
-        // -----------------------------------------------------
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         let w = CVPixelBufferGetWidth(buffer)
         let h = CVPixelBufferGetHeight(buffer)
-        if let cb = onFrameDimensionsChanged {
-            cb(w, h)
+
+        // Dimensions first → overlays
+        DispatchQueue.main.async { [weak self] in
+            self?.onFrameDimensionsChanged?(w, h)
         }
 
-        // Publish pixel buffer (DotTestMode & overlays rely on this)
-        DispatchQueue.main.async {
-            self.latestPixelBuffer = buffer
+        // Publish latest pixel buffer
+        DispatchQueue.main.async { [weak self] in
+            self?.latestPixelBuffer = buffer
         }
 
-        // -----------------------------------------------------
-        // Intrinsics extraction
-        // -----------------------------------------------------
-        var fx: Float = 1
-        var fy: Float = 1
-        var cx: Float = 0
-        var cy: Float = 0
+        // Extract intrinsics
+        var fx: Float = 1, fy: Float = 1, cx: Float = 0, cy: Float = 0
 
-        if let mat = CMGetAttachment(
-            sampleBuffer,
-            key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
-            attachmentModeOut: nil
-        ) as? simd_float3x3 {
+        if let mat = CMGetAttachment(sampleBuffer,
+                                     key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
+                                     attachmentModeOut: nil) as? simd_float3x3 {
             fx = mat[0][0]
             fy = mat[1][1]
             cx = mat[2][0]
@@ -196,17 +152,17 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         let intrinsics = CameraIntrinsics(fx: fx, fy: fy, cx: cx, cy: cy)
 
-        // -----------------------------------------------------
-        // Vision Pipeline Execution
-        // -----------------------------------------------------
-        let frame = pipeline.processFrame(
-            pixelBuffer: buffer,
-            timestamp: timestamp,
-            intrinsics: intrinsics
-        )
+        // Run VisionPipeline off-main thread
+        DispatchQueue.global(qos: .userInitiated).async {
+            let frame = self.pipeline.processFrame(
+                pixelBuffer: buffer,
+                timestamp: timestamp,
+                intrinsics: intrinsics
+            )
 
-        DispatchQueue.main.async {
-            self.latestFrame = frame
+            DispatchQueue.main.async {
+                self.latestFrame = frame
+            }
         }
     }
 }

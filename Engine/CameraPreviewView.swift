@@ -6,26 +6,17 @@
 import UIKit
 import AVFoundation
 
-/// The core camera rendering view.
-/// Displays the live camera feed using AVCaptureVideoPreviewLayer.
-/// Supports overlay layers (dots, ROI, RS residuals, spin, debug).
 final class CameraPreviewView: UIView {
-
-    // MARK: - Preview Layer
 
     override class var layerClass: AnyClass {
         AVCaptureVideoPreviewLayer.self
     }
 
     var previewLayer: AVCaptureVideoPreviewLayer {
-        return layer as! AVCaptureVideoPreviewLayer
+        layer as! AVCaptureVideoPreviewLayer
     }
 
-    // MARK: - Overlay Layers
-
     private var overlays: [BaseOverlayLayer] = []
-
-    // MARK: - Init
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -41,8 +32,6 @@ final class CameraPreviewView: UIView {
         backgroundColor = .black
         previewLayer.videoGravity = .resizeAspectFill
     }
-
-    // MARK: - Attach
 
     func attachSession(_ session: AVCaptureSession) {
         previewLayer.session = session

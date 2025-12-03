@@ -16,23 +16,28 @@ struct CameraPreviewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> CameraPreviewView {
         let view = CameraPreviewView()
 
-        // Attach camera session
+        // Attach live camera session
         view.attachSession(camera.captureSession)
-        // Setup overlay mapper once we know buffer size
+
+        // Buffer dimension callback
         camera.onFrameDimensionsChanged = { width, height in
             let mapper = OverlayMapper(
                 bufferWidth: width,
                 bufferHeight: height,
-                viewSize: view.bounds.size,  
-                previewLayer: view.previewLayer
+                viewSize: view.bounds.size,
+                previewLayer: view.previewLayer   // SAFE, non-nil
             )
 
             dotLayer.assignMapper(mapper)
             trackingLayer?.assignMapper(mapper)
             reprojectionLayer?.assignMapper(mapper)
+
+            dotLayer.setNeedsDisplay()
+            trackingLayer?.setNeedsDisplay()
+            reprojectionLayer?.setNeedsDisplay()
         }
 
-        // Add overlays
+        // Install overlays
         view.addOverlay(dotLayer)
         if let t = trackingLayer { view.addOverlay(t) }
         if let r = reprojectionLayer { view.addOverlay(r) }
@@ -40,5 +45,7 @@ struct CameraPreviewContainer: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: CameraPreviewView, context: Context) {}
+    func updateUIView(_ uiView: CameraPreviewView, context: Context) {
+        // No-op (draw happens via setNeedsDisplay on dimension change or frame change)
+    }
 }
