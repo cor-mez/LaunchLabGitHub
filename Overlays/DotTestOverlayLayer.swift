@@ -1,140 +1,67 @@
-//
-//  DotTestOverlayLayer.swift
-//  LaunchLab
-//
+// DotTestOverlayLayer.swift v4A
 
 import UIKit
 import CoreGraphics
 
-final class DotTestOverlayLayer: BaseOverlayLayer {
+final class DotTestOverlayLayer: CALayer {
 
-    // MARK: - State
+    private var pointsCPU: [CGPoint] = []
+    private var pointsGPU: [CGPoint] = []
+    private var roiRect: CGRect = .zero
+    private var bufferSize: CGSize = .zero
 
-    var detectedPoints: [CGPoint] = []
-    var bufferSize: CGSize = .zero
-    var roiRect: CGRect?
-
-    var showClusterDebug: Bool = false
-    var clusterCentroid: CGPoint?
-    var clusterRadiusPx: CGFloat = 0
-
-    override init() {
-        super.init()
-        contentsScale = UIScreen.main.scale
-        isOpaque = false
-        needsDisplayOnBoundsChange = true
-    }
-
-    override init(layer: Any) {
-        super.init(layer: layer)
-        contentsScale = UIScreen.main.scale
-        isOpaque = false
-        needsDisplayOnBoundsChange = true
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        contentsScale = UIScreen.main.scale
-        isOpaque = false
-        needsDisplayOnBoundsChange = true
-    }
-
-    // MARK: - API
-
-    func update(points: [CGPoint], bufferSize: CGSize, roiRect: CGRect?) {
-        self.detectedPoints = points
+    func update(
+        pointsCPU: [CGPoint],
+        pointsGPU: [CGPoint],
+        bufferSize: CGSize,
+        roiRect: CGRect?
+    ) {
+        self.pointsCPU = pointsCPU
+        self.pointsGPU = pointsGPU
         self.bufferSize = bufferSize
-        self.roiRect = roiRect
+        self.roiRect = roiRect ?? .zero
         setNeedsDisplay()
     }
-
-    func updateClusterDebug(centroid: CGPoint?, radiusPx: CGFloat) {
-        self.clusterCentroid = centroid
-        self.clusterRadiusPx = radiusPx
-        setNeedsDisplay()
-    }
-
-    // MARK: - Drawing
 
     override func draw(in ctx: CGContext) {
-        guard bufferSize.width > 0,
-              bufferSize.height > 0 else { return }
+        let w = bounds.width
+        let h = bounds.height
+        if w <= 0 || h <= 0 { return }
+        if bufferSize.width <= 0 || bufferSize.height <= 0 { return }
 
-        let viewSize = bounds.size
-        let imgSize = bufferSize
+        let sx = w / bufferSize.width
+        let sy = h / bufferSize.height
+        let scale = min(sx, sy)
 
-        // Match UIImageView(.scaleAspectFit)
-        let scale = min(viewSize.width / imgSize.width,
-                        viewSize.height / imgSize.height)
+        ctx.setLineWidth(1.0)
 
-        let drawW = imgSize.width * scale
-        let drawH = imgSize.height * scale
-
-        let offsetX = (viewSize.width  - drawW) * 0.5
-        let offsetY = (viewSize.height - drawH) * 0.5
-
-        let rctx = UIGraphicsGetCurrentContext()!
-        rctx.saveGState()
-        defer { rctx.restoreGState() }
-
-        // -------------------------------
-        // ROI Circle (always full-frame)
-        // -------------------------------
-        if let roi = roiRect {
-            let center = CGPoint(
-                x: offsetX + roi.midX * scale,
-                y: offsetY + roi.midY * scale
-            )
-            let radius = 0.5 * min(roi.width, roi.height) * scale
-
-            rctx.setStrokeColor(UIColor.white.withAlphaComponent(0.9).cgColor)
-            rctx.setLineWidth(1.5)
-            rctx.strokeEllipse(
-                in: CGRect(x: center.x - radius,
-                           y: center.y - radius,
-                           width: radius * 2,
-                           height: radius * 2)
-            )
+        if roiRect.width > 0 && roiRect.height > 0 {
+            let rx = roiRect.origin.x * scale
+            let ry = roiRect.origin.y * scale
+            let rw = roiRect.width * scale
+            let rh = roiRect.height * scale
+            ctx.setStrokeColor(UIColor.white.cgColor)
+            ctx.stroke(CGRect(x: rx, y: ry, width: rw, height: rh))
         }
 
-        // -------------------------------
-        // Yellow FAST9 Points
-        //-------------------------------
-        rctx.setFillColor(UIColor.yellow.cgColor)
-        for p in detectedPoints {
-            let vx = offsetX + p.x * scale
-            let vy = offsetY + p.y * scale
-            let dotRect = CGRect(x: vx - 2,
-                                 y: vy - 2,
-                                 width: 4,
-                                 height: 4)
-            rctx.fillEllipse(in: dotRect)
+        if pointsCPU.count > 0 {
+            ctx.setFillColor(UIColor.yellow.cgColor)
+            for p in pointsCPU {
+                let px = p.x * scale
+                let py = p.y * scale
+                let r = CGRect(x: px - 2, y: py - 2, width: 4, height: 4)
+                ctx.fillEllipse(in: r)
+            }
         }
 
-        // -------------------------------
-        // Optional cluster debug
-        // -------------------------------
-        if showClusterDebug, let c = clusterCentroid {
-            let cx = offsetX + c.x * scale
-            let cy = offsetY + c.y * scale
-
-            rctx.setStrokeColor(UIColor.green.cgColor)
-            rctx.setLineWidth(1.0)
-
-            // Crosshair
-            rctx.move(to: CGPoint(x: cx - 6, y: cy))
-            rctx.addLine(to: CGPoint(x: cx + 6, y: cy))
-            rctx.move(to: CGPoint(x: cx, y: cy - 6))
-            rctx.addLine(to: CGPoint(x: cx, y: cy + 6))
-            rctx.strokePath()
-
-            let radius = clusterRadiusPx * scale
-            rctx.strokeEllipse(
-                in: CGRect(x: cx - radius,
-                           y: cy - radius,
-                           width: radius * 2,
-                           height: radius * 2)
-            )
+        if pointsGPU.count > 0 {
+            ctx.setFillColor(UIColor.cyan.cgColor)
+            for p in pointsGPU {
+                let px = p.x * scale
+                let py = p.y * scale
+                let r = CGRect(x: px - 2, y: py - 2, width: 4, height: 4)
+                ctx.fillEllipse(in: r)
+            }
         }
     }
 }

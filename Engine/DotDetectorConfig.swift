@@ -1,68 +1,38 @@
-// File: Engine/DotDetectorConfig.swift
-// LaunchLab — Unified Dot Detector Configuration
 //
-// This struct contains EVERY tunable parameter used by:
-//   • Y-path preprocessing
-//   • Blue-channel normalization
-//   • Super-resolution
-//   • FAST9 corner detection
-//   • DotTestMode runtime overrides
+//  DotDetectorConfig.swift
+//  LaunchLab
 //
-// All fields are public and internal-accessible across helper modules.
 
 import Foundation
 
+public enum BlueEnhancementMode: Int, Codable {
+    case off        // Y-path only
+    case boxBlur    // Adaptive Blue → BoxBlur → FAST9
+    case bilateral  // Adaptive Blue → Bilateral → FAST9
+}
+
 public struct DotDetectorConfig {
 
-    // =======================================================
-    // MARK: - FAST9 Thresholds
-    // =======================================================
-
-    /// FAST9 intensity threshold (typically 8–20)
+    // FAST9 thresholds
     public var fast9Threshold: Int
-
-    /// Local contrast pre-check threshold (before full FAST9)
     public var vImageThreshold: Float
 
-    // =======================================================
-    // MARK: - Gain / Preprocessing
-    // =======================================================
-
-    /// Y-path brightness amplification
+    // Gain / preprocessing
     public var preFilterGain: Float
-
-    /// Blue-path chroma amplification
     public var blueChromaGain: Float
 
-    // =======================================================
-    // MARK: - Channel Selection
-    // =======================================================
-
-    /// Use Blue-first FAST9 path
+    // Channel selection + Blue enhancement mode
     public var useBlueChannel: Bool
+    public var blueEnhancement: BlueEnhancementMode
 
-    /// Enable Super-Resolution (SR-first)
+    // Super-resolution
     public var useSuperResolution: Bool
-
-    // =======================================================
-    // MARK: - SR Scaling
-    // =======================================================
-
-    /// Optional SR override: {1.0, 1.5, 2.0, 3.0}
-    /// If nil → auto-selected based on ROI size
     public var srScaleOverride: Float?
 
-    // =======================================================
-    // MARK: - Debug / Developer UI Flags
-    // =======================================================
-
+    // Debug flags
     public var debugShowYROI: Bool
     public var debugShowBlueROI: Bool
     public var debugShowNormalizedBlue: Bool
-
-    // =======================================================
-    // MARK: - Init
-    // =======================================================
 
     public init(
         fast9Threshold: Int = 14,
@@ -70,6 +40,7 @@ public struct DotDetectorConfig {
         preFilterGain: Float = 1.35,
         blueChromaGain: Float = 4.0,
         useBlueChannel: Bool = true,
+        blueEnhancement: BlueEnhancementMode = .boxBlur,
         useSuperResolution: Bool = true,
         srScaleOverride: Float? = nil,
         debugShowYROI: Bool = false,
@@ -81,6 +52,7 @@ public struct DotDetectorConfig {
         self.preFilterGain = preFilterGain
         self.blueChromaGain = blueChromaGain
         self.useBlueChannel = useBlueChannel
+        self.blueEnhancement = blueEnhancement
         self.useSuperResolution = useSuperResolution
         self.srScaleOverride = srScaleOverride
         self.debugShowYROI = debugShowYROI

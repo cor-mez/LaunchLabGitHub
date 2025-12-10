@@ -1,8 +1,9 @@
-//
-//  DotTestDebugSurface.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/9/25.
-//
-
 import Foundation
+
+enum DotTestDebugSurface: String, CaseIterable {
+    case camera
+    case yNorm
+    case yEdge
+    case cbEdge
+    case fast9
+}

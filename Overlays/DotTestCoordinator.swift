@@ -1,166 +1,234 @@
-//
-//  DotTestCoordinator.swift
-//  LaunchLab
-//
-//  Receives frames from CameraManager,
-//  manages freeze/unfreeze,
-//  runs DotDetector in FULL-FRAME ROI,
-//  feeds DotTestOverlayLayer with mapped points.
-//
-
 import Foundation
 import AVFoundation
 import CoreVideo
 import CoreGraphics
 import Combine
+import Accelerate
+
+enum DetectorBackend: String, CaseIterable, Hashable {
+    case cpu
+    case gpuY
+    case gpuCb
+}
 
 @MainActor
 final class DotTestCoordinator: ObservableObject {
 
-    // MARK: - Buffers
-
     @Published var liveBuffer: CVPixelBuffer?
     @Published var frozenBuffer: CVPixelBuffer?
+    @Published var currentROI: CGRect?
 
-    var isFrozen: Bool = false
+    @Published var preFast9Buffer: vImage_Buffer?
+    @Published var srFast9Buffer: vImage_Buffer?
 
-    // MARK: - Telemetry
-
-    @Published private(set) var detectedCount: Int = 0
-    @Published private(set) var averageBrightness: Double = 0
-    @Published private(set) var roiSize: CGSize = .zero
-
-    // MARK: - Overlay
+    @Published var detectedCountCPU: Int = 0
+    @Published var detectedCountGPU: Int = 0
+    @Published var averageBrightness: Double = 0
+    @Published var roiSize: CGSize = .zero
 
     let overlayLayer = DotTestOverlayLayer()
 
-    /// Provided by DotTestMode to install a mapper when buffer dimensions change.
-    var onDimensions: ((Int, Int) -> Void)?
-
-    // MARK: - Wiring
-
     weak var camera: CameraManager?
+    var onDimensions: ((Int, Int) -> Void)?
     private var cancellable: AnyCancellable?
+
+    private let gpu = MetalDetector()
+
+    var isFrozen = false
 
     func attach(camera: CameraManager) {
         self.camera = camera
-
-        // Subscribe to camera frames.
-        cancellable = camera.$latestPixelBuffer
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] buffer in
-                guard let self = self else { return }
-                guard let buffer = buffer else { return }
-
-                // IMPORTANT: Notify dimensions ASAP.
-                let w = CVPixelBufferGetWidth(buffer)
-                let h = CVPixelBufferGetHeight(buffer)
+        cancellable = camera.$latestWeakPixelBuffer
+            .receive(on: RunLoop.main)
+            .sink { [weak self] wpb in
+                guard let self, let pb = wpb.buffer else { return }
+                let w = CVPixelBufferGetWidth(pb)
+                let h = CVPixelBufferGetHeight(pb)
                 self.onDimensions?(w, h)
-
-                if !self.isFrozen {
-                    self.liveBuffer = buffer
-                }
+                if !self.isFrozen { self.liveBuffer = pb }
             }
     }
 
-    // MARK: - Freeze / Unfreeze
-
     func freezeFrame() {
-        guard let live = liveBuffer else { return }
-        frozenBuffer = live
+        guard let pb = liveBuffer else { return }
+        frozenBuffer = pb
         isFrozen = true
     }
 
     func unfreeze() {
         frozenBuffer = nil
         isFrozen = false
-
-        overlayLayer.update(points: [],
-                            bufferSize: .zero,
-                            roiRect: nil)
-        overlayLayer.updateClusterDebug(centroid: nil,
-                                        radiusPx: 0)
-
-        detectedCount = 0
+        if var p = preFast9Buffer { p.freeSelf() }
+        if var s = srFast9Buffer { s.freeSelf() }
+        preFast9Buffer = nil
+        srFast9Buffer = nil
+        detectedCountCPU = 0
+        detectedCountGPU = 0
         averageBrightness = 0
         roiSize = .zero
+        currentROI = nil
+        overlayLayer.update(pointsCPU: [], pointsGPU: [], bufferSize: .zero, roiRect: nil)
     }
 
-    // MARK: - Detection
-
-    func runDetection(with config: DotDetectorConfig) {
+    func runDetection(
+        with config: DotDetectorConfig,
+        roiScale: CGFloat,
+        backend: DetectorBackend
+    ) {
         guard let buffer = frozenBuffer ?? liveBuffer else { return }
 
-        let width  = CVPixelBufferGetWidth(buffer)
-        let height = CVPixelBufferGetHeight(buffer)
+        let w = CVPixelBufferGetWidth(buffer)
+        let h = CVPixelBufferGetHeight(buffer)
 
-        // DotTestMode ALWAYS uses FULL-FRAME ROI.
-        let roi = CGRect(x: 0, y: 0,
-                         width: CGFloat(width),
-                         height: CGFloat(height))
+        let side = CGFloat(min(w, h)) * roiScale
+        let roi = CGRect(
+            x: CGFloat(w) * 0.5 - side * 0.5,
+            y: CGFloat(h) * 0.5 - side * 0.5,
+            width: side,
+            height: side
+        )
 
+        currentROI = roi
+        roiSize = roi.size
+
+        switch backend {
+        case .cpu:
+            runCPU(buffer: buffer, roi: roi, width: w, height: h, config: config)
+        case .gpuY:
+            runGPU_Y(buffer: buffer, roi: roi, width: w, height: h, config: config)
+        case .gpuCb:
+            runGPU_Cb(buffer: buffer, roi: roi, width: w, height: h, config: config)
+        }
+    }
+}
+extension DotTestCoordinator {
+
+    private func runCPU(
+        buffer: CVPixelBuffer,
+        roi: CGRect,
+        width: Int,
+        height: Int,
+        config: DotDetectorConfig
+    ) {
         let detector = DotDetector(config: config)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+            let (points, _, preBuf, srBuf) =
+                detector.detectWithFAST9Buffers(pixelBuffer: buffer, roi: roi)
 
-            // 1) Run detector
-            let points = detector.detect(in: buffer, roi: roi)
-
-            // 2) Compute mean brightness in Y-plane
-            var brightness: Double = 0
-            CVPixelBufferLockBaseAddress(buffer, .readOnly)
-            if let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) {
-                let ptr = base.assumingMemoryBound(to: UInt8.self)
-                let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
-                var sum: Double = 0
-                for y in 0..<height {
-                    let row = ptr.advanced(by: y * rowBytes)
-                    for x in 0..<width {
-                        sum += Double(row[x])
-                    }
-                }
-                brightness = sum / Double(width * height * 255)
-            }
-            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
-
-            // 3) Compute cluster info for debug overlay
-            var centroid: CGPoint? = nil
-            var radiusPx: CGFloat = 0
-
-            if !points.isEmpty {
-                var sx: CGFloat = 0
-                var sy: CGFloat = 0
-                for p in points {
-                    sx += p.x
-                    sy += p.y
-                }
-                let cx = sx / CGFloat(points.count)
-                let cy = sy / CGFloat(points.count)
-                centroid = CGPoint(x: cx, y: cy)
-
-                var sumR: CGFloat = 0
-                for p in points {
-                    let dx = p.x - cx
-                    let dy = p.y - cy
-                    sumR += sqrt(dx*dx + dy*dy)
-                }
-                radiusPx = sumR / CGFloat(points.count)
-            }
-
-            let bufferSize = CGSize(width: width, height: height)
-            let roiSize = CGSize(width: width, height: height)
-            let count = points.count
+            let bright = self.computeBrightness(buffer: buffer, roi: roi)
 
             DispatchQueue.main.async {
-                self.detectedCount = count
-                self.averageBrightness = brightness
-                self.roiSize = roiSize
-                self.overlayLayer.update(points: points,
-                                         bufferSize: bufferSize,
-                                         roiRect: roi)
-                self.overlayLayer.updateClusterDebug(centroid: centroid,
-                                                     radiusPx: radiusPx)
+                if var p = self.preFast9Buffer { p.freeSelf() }
+                if var s = self.srFast9Buffer { s.freeSelf() }
+                self.preFast9Buffer = preBuf
+                self.srFast9Buffer = srBuf
+                self.detectedCountCPU = points.count
+                self.averageBrightness = bright
+                self.overlayLayer.update(
+                    pointsCPU: points,
+                    pointsGPU: [],
+                    bufferSize: CGSize(width: width, height: height),
+                    roiRect: roi
+                )
             }
         }
+    }
+
+    private func runGPU_Y(
+        buffer: CVPixelBuffer,
+        roi: CGRect,
+        width: Int,
+        height: Int,
+        config: DotDetectorConfig
+    ) {
+        preFast9Buffer = nil
+        srFast9Buffer = nil
+        let sr = config.srScaleOverride
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            self.gpu.prepareFrameY(
+                buffer,
+                roi: roi,
+                srScale: sr,
+                threshold: Float(config.fast9Threshold)
+            )
+
+            let points = self.gpu.gpuFast9CornersY()
+            let bright = self.computeBrightness(buffer: buffer, roi: roi)
+
+            DispatchQueue.main.async {
+                self.detectedCountGPU = points.count
+                self.averageBrightness = bright
+                self.overlayLayer.update(
+                    pointsCPU: [],
+                    pointsGPU: points,
+                    bufferSize: CGSize(width: width, height: height),
+                    roiRect: roi
+                )
+            }
+        }
+    }
+
+    private func runGPU_Cb(
+        buffer: CVPixelBuffer,
+        roi: CGRect,
+        width: Int,
+        height: Int,
+        config: DotDetectorConfig
+    ) {
+        preFast9Buffer = nil
+        srFast9Buffer = nil
+        let sr = config.srScaleOverride
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            self.gpu.prepareFrameCb(
+                buffer,
+                roi: roi,
+                srScale: sr,
+                threshold: Float(config.fast9Threshold),
+                config: config
+            )
+
+            let points = self.gpu.gpuFast9CornersCb()
+            let bright = self.computeBrightness(buffer: buffer, roi: roi)
+
+            DispatchQueue.main.async {
+                self.detectedCountGPU = points.count
+                self.averageBrightness = bright
+                self.overlayLayer.update(
+                    pointsCPU: [],
+                    pointsGPU: points,
+                    bufferSize: CGSize(width: width, height: height),
+                    roiRect: roi
+                )
+            }
+        }
+    }
+
+    private func computeBrightness(buffer: CVPixelBuffer, roi: CGRect) -> Double {
+        var sum = 0.0
+        var count = 0
+
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        if let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) {
+            let ptr = base.assumingMemoryBound(to: UInt8.self)
+            let rb = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            for y in Int(roi.minY)..<Int(roi.maxY) {
+                let row = ptr + y * rb
+                for x in Int(roi.minX)..<Int(roi.maxX) {
+                    sum += Double(row[x])
+                    count += 1
+                }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+        if count == 0 { return 0 }
+        return sum / (Double(count) * 255.0)
     }
 }

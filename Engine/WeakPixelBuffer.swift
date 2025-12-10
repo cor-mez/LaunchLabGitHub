@@ -1,8 +1,7 @@
-//
-//  WeakPixelBuffer.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/7/25.
-//
-
 import Foundation
+import CoreVideo
+
+final class WeakPixelBuffer {
+    weak var buffer: CVPixelBuffer?
+    init(_ buffer: CVPixelBuffer?) { self.buffer = buffer }
+}

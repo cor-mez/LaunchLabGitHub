@@ -1,9 +1,3 @@
-// File: Engine/RawSessionLogger.swift
-//
-//  RawSessionLogger.swift
-//  LaunchLab
-//
-
 import Foundation
 import CoreVideo
 import simd
@@ -19,9 +13,12 @@ final class RawSessionLogger {
 
     private let maxDuration: Double = 10.0
 
+    var enableLogging: Bool = false
+
     init() {}
 
     func start(timestamp: Double) {
+        guard enableLogging else { return }
         guard !isRecording else { return }
         guard let sessionDirectory = Self.makeSessionDirectory() else { return }
 
@@ -54,8 +51,9 @@ final class RawSessionLogger {
         let ballLock = Self.extractBallLock(from: residuals)
         let stateCode = ballLock?.stateCode ?? 0
 
-        if !isRecording && stateCode == 1 && lastStateCode != 1 {
-            start(timestamp: timestamp)
+        if !enableLogging {
+            lastStateCode = stateCode
+            return
         }
 
         if isRecording {
@@ -65,75 +63,76 @@ final class RawSessionLogger {
             }
         }
 
-        if isRecording, let writer = writer {
-            frameIndex &+= 1
+        guard isRecording, let writer = writer else {
+            lastStateCode = stateCode
+            return
+        }
 
-            let rs = Self.extractRS(from: residuals)
-            let flicker = Self.extractFlicker(from: residuals)
+        frameIndex &+= 1
 
-            let dots = frame.dots.map {
-                RawSessionDot(
-                    x: Float($0.position.x),
-                    y: Float($0.position.y)
-                )
-            }
+        let rs = Self.extractRS(from: residuals)
+        let flicker = Self.extractFlicker(from: residuals)
 
-            let residualLogs: [RawSessionResidual] = residuals.map {
-                RawSessionResidual(
-                    id: $0.id,
-                    ex: $0.error.x,
-                    ey: $0.error.y,
-                    weight: $0.weight
-                )
-            }
-
-            let intrDTO = RawSessionIntrinsics(
-                fx: intrinsics.fx,
-                fy: intrinsics.fy,
-                cx: intrinsics.cx,
-                cy: intrinsics.cy
+        let dots = frame.dots.map {
+            RawSessionDot(
+                x: Float($0.position.x),
+                y: Float($0.position.y)
             )
+        }
 
-            let gravity = imu.gravity
-            let rotationRate = imu.rotationRate
-            let q = imu.attitude.vector
+        let residualLogs: [RawSessionResidual] = residuals.map {
+            RawSessionResidual(
+                id: $0.id,
+                ex: $0.error.x,
+                ey: $0.error.y,
+                weight: $0.weight
+            )
+        }
 
-            let entry = RawSessionEntry(
+        let intrDTO = RawSessionIntrinsics(
+            fx: intrinsics.fx,
+            fy: intrinsics.fy,
+            cx: intrinsics.cx,
+            cy: intrinsics.cy
+        )
+
+        let gravity = imu.gravity
+        let rotationRate = imu.rotationRate
+        let q = imu.attitude.vector
+
+        let entry = RawSessionEntry(
+            frameIndex: frameIndex,
+            timestamp: timestamp,
+            intrinsics: intrDTO,
+            imuGravity: [gravity.x, gravity.y, gravity.z],
+            imuRotationRate: [rotationRate.x, rotationRate.y, rotationRate.z],
+            imuAttitude: [q.x, q.y, q.z, q.w],
+            iso: exposureISO,
+            exposureDuration: exposureDuration,
+            ballRadiusPx: nil,
+            ballLockState: ballLock?.stateCode,
+            ballLockQuality: ballLock?.quality,
+            rsShear: rs?.shear,
+            rsRowSpan: rs?.rowSpan,
+            rsConfidence: rs?.confidence,
+            flickerModulation: flicker,
+            unsafeLighting: unsafeLighting,
+            unsafeFrameRate: unsafeFrameRate,
+            unsafeThermal: unsafeThermal,
+            dots: dots,
+            residuals: residualLogs
+        )
+
+        if let yData = Self.extractYPlaneData(from: frame.pixelBuffer) {
+            writer.write(
                 frameIndex: frameIndex,
-                timestamp: timestamp,
-                intrinsics: intrDTO,
-                imuGravity: [gravity.x, gravity.y, gravity.z],
-                imuRotationRate: [rotationRate.x, rotationRate.y, rotationRate.z],
-                imuAttitude: [q.x, q.y, q.z, q.w],
-                iso: exposureISO,
-                exposureDuration: exposureDuration,
-                ballRadiusPx: nil,
-                ballLockState: ballLock?.stateCode,
-                ballLockQuality: ballLock?.quality,
-                rsShear: rs?.shear,
-                rsRowSpan: rs?.rowSpan,
-                rsConfidence: rs?.confidence,
-                flickerModulation: flicker,
-                unsafeLighting: unsafeLighting,
-                unsafeFrameRate: unsafeFrameRate,
-                unsafeThermal: unsafeThermal,
-                dots: dots,
-                residuals: residualLogs
+                yData: yData,
+                telemetry: entry
             )
-
-            if let yData = Self.extractYPlaneData(from: frame.pixelBuffer) {
-                writer.write(
-                    frameIndex: frameIndex,
-                    yData: yData,
-                    telemetry: entry
-                )
-            }
         }
 
         lastStateCode = stateCode
     }
-
-    // MARK: - Helpers
 
     private static func makeSessionDirectory() -> URL? {
         let fm = FileManager.default
