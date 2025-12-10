@@ -1,67 +1,75 @@
-// DotTestOverlayLayer.swift v4A
-
 import UIKit
 import CoreGraphics
 
 final class DotTestOverlayLayer: CALayer {
 
-    private var pointsCPU: [CGPoint] = []
-    private var pointsGPU: [CGPoint] = []
-    private var roiRect: CGRect = .zero
-    private var bufferSize: CGSize = .zero
+    private let coordinator = DotTestCoordinator.shared
 
-    func update(
-        pointsCPU: [CGPoint],
-        pointsGPU: [CGPoint],
-        bufferSize: CGSize,
-        roiRect: CGRect?
-    ) {
-        self.pointsCPU = pointsCPU
-        self.pointsGPU = pointsGPU
-        self.bufferSize = bufferSize
-        self.roiRect = roiRect ?? .zero
+    private var cpuCorners: [CGPoint] = []
+    private var gpuYCorners: [CGPoint] = []
+    private var gpuCbCorners: [CGPoint] = []
+
+    private var roiRect: CGRect = .zero
+
+    override init() {
+        super.init()
+        contentsScale = UIScreen.main.scale
+        needsDisplayOnBoundsChange = true
+    }
+
+    override init(layer: Any) {
+        super.init(layer: layer)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    func updateAllCorners() {
+        cpuCorners = coordinator.cpuCorners()
+        gpuYCorners = coordinator.gpuCornersY()
+        gpuCbCorners = coordinator.gpuCornersCb()
+        setNeedsDisplay()
+    }
+
+    func updateROI(_ roi: CGRect) {
+        roiRect = roi
         setNeedsDisplay()
     }
 
     override func draw(in ctx: CGContext) {
-        let w = bounds.width
-        let h = bounds.height
-        if w <= 0 || h <= 0 { return }
-        if bufferSize.width <= 0 || bufferSize.height <= 0 { return }
+        ctx.setFillColor(UIColor.green.cgColor)
+        let s: CGFloat = 3.0
+        for p in cpuCorners {
+            let r = CGRect(x: p.x - s*0.5,
+                           y: p.y - s*0.5,
+                           width: s,
+                           height: s)
+            ctx.fillEllipse(in: r)
+        }
 
-        let sx = w / bufferSize.width
-        let sy = h / bufferSize.height
-        let scale = min(sx, sy)
+        ctx.setFillColor(UIColor.red.cgColor)
+        for p in gpuYCorners {
+            let r = CGRect(x: p.x - s*0.5,
+                           y: p.y - s*0.5,
+                           width: s,
+                           height: s)
+            ctx.fillEllipse(in: r)
+        }
 
-        ctx.setLineWidth(1.0)
+        ctx.setFillColor(UIColor.blue.cgColor)
+        for p in gpuCbCorners {
+            let r = CGRect(x: p.x - s*0.5,
+                           y: p.y - s*0.5,
+                           width: s,
+                           height: s)
+            ctx.fillEllipse(in: r)
+        }
 
-        if roiRect.width > 0 && roiRect.height > 0 {
-            let rx = roiRect.origin.x * scale
-            let ry = roiRect.origin.y * scale
-            let rw = roiRect.width * scale
-            let rh = roiRect.height * scale
+        if roiRect != .zero {
             ctx.setStrokeColor(UIColor.white.cgColor)
-            ctx.stroke(CGRect(x: rx, y: ry, width: rw, height: rh))
-        }
-
-        if pointsCPU.count > 0 {
-            ctx.setFillColor(UIColor.yellow.cgColor)
-            for p in pointsCPU {
-                let px = p.x * scale
-                let py = p.y * scale
-                let r = CGRect(x: px - 2, y: py - 2, width: 4, height: 4)
-                ctx.fillEllipse(in: r)
-            }
-        }
-
-        if pointsGPU.count > 0 {
-            ctx.setFillColor(UIColor.cyan.cgColor)
-            for p in pointsGPU {
-                let px = p.x * scale
-                let py = p.y * scale
-                let r = CGRect(x: px - 2, y: py - 2, width: 4, height: 4)
-                ctx.fillEllipse(in: r)
-            }
+            ctx.setLineWidth(1.0)
+            ctx.stroke(roiRect)
         }
     }
 }
