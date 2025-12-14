@@ -1,55 +1,69 @@
-import UIKit
-import MetalKit
-import CoreVideo
+//
+//  DotTestViewController.swift
+//
 
+import UIKit
+import CoreVideo
+import MetalKit
+
+@MainActor
 final class DotTestViewController: UIViewController {
 
-    private let preview = DotTestPreviewView(frame: .zero, device: MetalRenderer.shared.device)
-    private let telemetry = DetectorTelemetryView()
     private let camera = CameraCapture()
-    private let renderer = DotTestCameraRenderer.shared
-    private let coordinator = DotTestCoordinator.shared
+    private let previewView = DotTestPreviewView(frame: .zero, device: nil)
+
+    // DotTestViewController.swift
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
         view.backgroundColor = .black
 
-        preview.frame = view.bounds
-        preview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(preview)
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(previewView)
 
-        telemetry.frame = CGRect(x: 10, y: 50, width: 260, height: 220)
-        telemetry.autoresizingMask = [.flexibleRightMargin, .flexibleBottomMargin]
-        view.addSubview(telemetry)
+        NSLayoutConstraint.activate([
+            previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            previewView.topAnchor.constraint(equalTo: view.topAnchor),
+            previewView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
 
-        camera.onFrame = { [weak self] pb in
-            guard let self = self else { return }
-            self.renderer.processFrame(pb, in: self.preview)
-            self.telemetry.refresh()
-        }
+        DebugProbe.enabledPhases = [.capture]
 
+        // ✅ ADD THIS LINE
+        DotTestMode.shared.isArmedForDetection = true
+
+        camera.delegate = self
         camera.start()
     }
+}
 
-    func setBackend(_ b: DetectorBackend) {
-        coordinator.setBackend(b)
-    }
+// -----------------------------------------------------------------------------
+// MARK: - CameraFrameDelegate
+// -----------------------------------------------------------------------------
 
-    func setDebugSurface(_ s: DotTestDebugSurface) {
-        preview.updateDebugSurface(s)
-    }
+extension DotTestViewController: CameraFrameDelegate {
 
-    func setROI(_ r: CGRect) {
-        coordinator.setROI(r)
-        preview.updateROI(r)
-    }
+    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer) {
 
-    func setSRScale(_ s: Float) {
-        coordinator.setSRScale(s)
-    }
+        DebugProbe.probePixelBuffer(pixelBuffer)
+        DebugProbe.probeYPlaneBytes(pixelBuffer, count: 16)
 
-    func toggleFreeze() {
-        coordinator.toggleFreeze()
+        let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
+
+        DotTestCoordinator.shared.processFrame(pixelBuffer)
+
+        previewView.updateOverlay(
+            fullSize: DotTestCoordinator.shared.currentFullSize(),
+            roi: DotTestCoordinator.shared.currentROI(),
+            sr: CGFloat(DotTestMode.shared.srScale)
+        )
+
+        previewView.render(
+            texture: yTex,
+            isR8: true,
+            forceSolidColor: false
+        )
     }
 }

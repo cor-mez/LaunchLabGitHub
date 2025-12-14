@@ -1,4 +1,6 @@
-// DotTestOverlayLayer.swift
+//
+//  DotTestOverlayLayer.swift
+//
 
 import UIKit
 import CoreGraphics
@@ -8,90 +10,162 @@ final class DotTestOverlayLayer: CALayer {
 
     private let mode = DotTestMode.shared
 
+    // Cached transforms
     private var fullSize: CGSize = .zero
-    private var roiRect: CGRect = .zero
+    private var roi: CGRect      = .zero
     private var srScale: CGFloat = 1.0
 
+    // MARK: - External Update API --------------------------------------------
+
+    func update(fullSize: CGSize, roi: CGRect, sr: CGFloat) {
+        self.fullSize = fullSize
+        self.roi      = roi
+        self.srScale  = sr
+        setNeedsDisplay()
+    }
+
+    // MARK: - Mapping Helpers -------------------------------------------------
+
+    private func roiRectInView() -> CGRect {
+        guard fullSize.width > 0, fullSize.height > 0 else { return .zero }
+
+        let viewW = bounds.width
+        let viewH = bounds.height
+
+        let sx = viewW / fullSize.width
+        let sy = viewH / fullSize.height
+        let scale = min(sx, sy)
+
+        let rw = roi.width  * scale
+        let rh = roi.height * scale
+        let rx = roi.origin.x * scale
+        let ry = roi.origin.y * scale
+
+        return CGRect(x: rx, y: ry, width: rw, height: rh)
+    }
+
+    private func mapPoint(
+        _ p: CGPoint,
+        roiView: CGRect,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) -> CGPoint {
+        CGPoint(
+            x: roiView.origin.x + p.x * scaleX,
+            y: roiView.origin.y + p.y * scaleY
+        )
+    }
+
+    // MARK: - Drawing ----------------------------------------------------------
+
     override func draw(in ctx: CGContext) {
+        guard roi.width > 0, roi.height > 0 else { return }
 
-        // Safety: never draw before system is armed
-        guard mode.isArmedForDetection else { return }
+        let roiView = roiRectInView()
 
-        // Safety: wait for warmup frames
-        guard mode.warmupFrameCount >= mode.warmupFramesNeeded else { return }
+        // Scale from ROI space → view space
+        let sx = roiView.width  / roi.width
+        let sy = roiView.height / roi.height
 
-        // Valid frame geometry required
-        guard fullSize.width > 32, fullSize.height > 32 else { return }
-        guard roiRect.width > 4, roiRect.height > 4 else { return }
+        // 🔵 ROI CIRCLE (DEBUG)
+        drawROICircle(in: ctx, roiView: roiView)
 
-        let matches = mode.matchCorners
-        let cpuOnly = mode.cpuOnlyCorners
-        let gpuOnly = mode.gpuOnlyCorners
-        let vectors = mode.mismatchVectors
+        drawMatches(in: ctx, rect: roiView, sx: sx, sy: sy)
+        drawCPUOnly(in: ctx, rect: roiView, sx: sx, sy: sy)
+        drawGPUOnly(in: ctx, rect: roiView, sx: sx, sy: sy)
+        drawVectors(in: ctx, rect: roiView, sx: sx, sy: sy)
+    }
 
-        let sx = bounds.width / fullSize.width
-        let sy = bounds.height / fullSize.height
+    // MARK: - ROI Circle -------------------------------------------------------
 
-        func xf(_ p: CGPoint) -> CGPoint {
-            let rx = roiRect.origin.x + p.x / srScale
-            let ry = roiRect.origin.y + p.y / srScale
-            return CGPoint(x: rx * sx, y: ry * sy)
-        }
+    private func drawROICircle(in ctx: CGContext, roiView: CGRect) {
+        let center = CGPoint(
+            x: roiView.midX,
+            y: roiView.midY
+        )
 
-        // DRAW MATCHES (white)
+        let radius = min(roiView.width, roiView.height) * 0.5
+
+        ctx.setStrokeColor(UIColor.cyan.withAlphaComponent(0.9).cgColor)
+        ctx.setLineWidth(2.0)
+        ctx.setLineDash(phase: 0, lengths: [6, 4]) // dashed = clearly debug
+
+        ctx.strokeEllipse(
+            in: CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+        )
+
+        ctx.setLineDash(phase: 0, lengths: []) // reset
+    }
+
+    // MARK: - Corner Drawing ---------------------------------------------------
+
+    private func drawMatches(
+        in ctx: CGContext,
+        rect: CGRect,
+        sx: CGFloat,
+        sy: CGFloat
+    ) {
         ctx.setFillColor(UIColor.white.cgColor)
-        for p in matches {
-            let q = xf(p)
-            ctx.fillEllipse(in: CGRect(x: q.x - 2,
-                                       y: q.y - 2,
-                                       width: 4,
-                                       height: 4))
-        }
 
-        // DRAW CPU-ONLY (green)
-        ctx.setFillColor(UIColor.green.cgColor)
-        for p in cpuOnly {
-            let q = xf(p)
-            ctx.fillEllipse(in: CGRect(x: q.x - 2,
-                                       y: q.y - 2,
-                                       width: 4,
-                                       height: 4))
-        }
-
-        // DRAW GPU-ONLY (red)
-        ctx.setFillColor(UIColor.red.cgColor)
-        for p in gpuOnly {
-            let q = xf(p)
-            ctx.fillEllipse(in: CGRect(x: q.x - 2,
-                                       y: q.y - 2,
-                                       width: 4,
-                                       height: 4))
-        }
-
-        // DRAW mismatch vectors
-        if mode.showVectors {
-            ctx.setStrokeColor(UIColor.purple.cgColor)
-            ctx.setLineWidth(1.0)
-
-            for (cpuPoint, gpuPoint) in vectors {
-                let c = xf(cpuPoint)
-                let g = xf(gpuPoint)
-                ctx.move(to: c)
-                ctx.addLine(to: g)
-                ctx.strokePath()
-            }
+        for p in mode.matchCorners {
+            let v = mapPoint(p, roiView: rect, scaleX: sx, scaleY: sy)
+            ctx.fillEllipse(in: CGRect(x: v.x - 2, y: v.y - 2, width: 4, height: 4))
         }
     }
 
-    func update(fullSize: CGSize,
-                roi: CGRect,
-                sr: CGFloat) {
+    private func drawCPUOnly(
+        in ctx: CGContext,
+        rect: CGRect,
+        sx: CGFloat,
+        sy: CGFloat
+    ) {
+        ctx.setFillColor(UIColor.green.cgColor)
 
-        self.fullSize = fullSize
-        self.roiRect = roi
-        self.srScale = sr
+        for p in mode.cpuOnlyCorners {
+            let v = mapPoint(p, roiView: rect, scaleX: sx, scaleY: sy)
+            ctx.fillEllipse(in: CGRect(x: v.x - 2, y: v.y - 2, width: 4, height: 4))
+        }
+    }
 
-        // NOTE: safe because layer is @MainActor
-        setNeedsDisplay()
+    private func drawGPUOnly(
+        in ctx: CGContext,
+        rect: CGRect,
+        sx: CGFloat,
+        sy: CGFloat
+    ) {
+        ctx.setFillColor(UIColor.red.cgColor)
+
+        for p in mode.gpuOnlyCorners {
+            let v = mapPoint(p, roiView: rect, scaleX: sx, scaleY: sy)
+            ctx.fillEllipse(in: CGRect(x: v.x - 2, y: v.y - 2, width: 4, height: 4))
+        }
+    }
+
+    // MARK: - Mismatch Vectors -------------------------------------------------
+
+    private func drawVectors(
+        in ctx: CGContext,
+        rect: CGRect,
+        sx: CGFloat,
+        sy: CGFloat
+    ) {
+        guard mode.showVectors else { return }
+
+        ctx.setStrokeColor(UIColor.purple.cgColor)
+        ctx.setLineWidth(1.5)
+
+        for pair in mode.mismatchVectors {
+            let c = mapPoint(pair.0, roiView: rect, scaleX: sx, scaleY: sy)
+            let g = mapPoint(pair.1, roiView: rect, scaleX: sx, scaleY: sy)
+
+            ctx.move(to: c)
+            ctx.addLine(to: g)
+            ctx.strokePath()
+        }
     }
 }

@@ -1,190 +1,282 @@
-// DotTestTuningPanel.swift
+//
+//  DotTestTuningPanel.swift
+//
 
 import SwiftUI
 
 struct DotTestTuningPanel: View {
 
-    @ObservedObject private var mode: DotTestMode = DotTestMode.shared
+    @ObservedObject private var mode = DotTestMode.shared
     @State private var showTelemetry = true
 
     var body: some View {
-        VStack {
-            ScrollView {
-                VStack(spacing: 20) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
 
-                    // MARK: - Backend Picker
-                    Picker("Backend", selection: $mode.backend) {
-                        ForEach(DotTestMode.Backend.allCases, id: \.self) { b in
-                            Text(b.rawValue).tag(b)
-                        }
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
+                // ----------------------------------------------------------
+                // MARK: Backend Picker
+                // ----------------------------------------------------------
+                pickerSection(
+                    title: "Detector Backend",
+                    selection: $mode.backend,
+                    items: DotTestMode.Backend.all,
+                    label: { Text($0.name).foregroundColor(.white) }
+                )
 
-                    // MARK: - Debug Surface Picker
-                    Picker("Debug Surface", selection: $mode.debugSurface) {
-                        ForEach(DotTestMode.DebugSurface.allCases, id: \.self) { d in
-                            Text(d.rawValue).tag(d)
-                        }
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
+                // ----------------------------------------------------------
+                // MARK: Debug Surface Picker
+                // ----------------------------------------------------------
+                pickerSection(
+                    title: "Debug Surface",
+                    selection: $mode.debugSurface,
+                    items: DotTestMode.DebugSurface.all,
+                    label: { Text($0.name).foregroundColor(.white) }
+                )
 
+                // ----------------------------------------------------------
+                // MARK: FAST9 Controls
+                // ----------------------------------------------------------
+                Group {
+                    sectionLabel("FAST9 Tuning")
 
-                    // MARK: - FAST9 Controls
-                    Group {
-                        Text("FAST9 Y Threshold: \(mode.fast9ThresholdY)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.fast9ThresholdY) },
-                                set: { mode.fast9ThresholdY = Int($0) }
-                            ),
-                            in: 1...60
-                        )
+                    tuningSlider(
+                        label: "FAST9 Threshold Y",
+                        value: Binding(
+                            get: { Double(mode.fast9ThresholdY) },
+                            set: { mode.fast9ThresholdY = Int($0) }
+                        ),
+                        range: 1...60
+                    )
 
-                        Text("FAST9 Cb Threshold: \(mode.fast9ThresholdCb)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.fast9ThresholdCb) },
-                                set: { mode.fast9ThresholdCb = Int($0) }
-                            ),
-                            in: 1...60
-                        )
+                    tuningSlider(
+                        label: "FAST9 Threshold Cb",
+                        value: Binding(
+                            get: { Double(mode.fast9ThresholdCb) },
+                            set: { mode.fast9ThresholdCb = Int($0) }
+                        ),
+                        range: 1...60
+                    )
 
-                        Text("Score Min Y: \(mode.fast9ScoreMinY)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.fast9ScoreMinY) },
-                                set: { mode.fast9ScoreMinY = Int($0) }
-                            ),
-                            in: 0...30
-                        )
+                    tuningSlider(
+                        label: "Score Min Y",
+                        value: Binding(
+                            get: { Double(mode.fast9ScoreMinY) },
+                            set: { mode.fast9ScoreMinY = Int($0) }
+                        ),
+                        range: 0...30
+                    )
 
-                        Text("Score Min Cb: \(mode.fast9ScoreMinCb)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.fast9ScoreMinCb) },
-                                set: { mode.fast9ScoreMinCb = Int($0) }
-                            ),
-                            in: 0...30
-                        )
+                    tuningSlider(
+                        label: "Score Min Cb",
+                        value: Binding(
+                            get: { Double(mode.fast9ScoreMinCb) },
+                            set: { mode.fast9ScoreMinCb = Int($0) }
+                        ),
+                        range: 0...30
+                    )
 
-                        Text("NMS Radius: \(mode.fast9NmsRadius)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.fast9NmsRadius) },
-                                set: { mode.fast9NmsRadius = Int($0) }
-                            ),
-                            in: 0...5
-                        )
+                    tuningSlider(
+                        label: "NMS Radius",
+                        value: Binding(
+                            get: { Double(mode.fast9NmsRadius) },
+                            set: { mode.fast9NmsRadius = Int($0) }
+                        ),
+                        range: 0...5
+                    )
 
-                        Text("Max Corners: \(mode.maxCorners)")
-                        Slider(
-                            value: Binding(
-                                get: { Double(mode.maxCorners) },
-                                set: { mode.maxCorners = Int($0) }
-                            ),
-                            in: 50...1000
-                        )
-                    }
-
-
-                    // MARK: - ROI Controls
-                    Group {
-                        Text("ROI Scale: \(mode.roiScale, specifier: "%.2f")")
-                        Slider(value: $mode.roiScale, in: 0.5...2.5)
-
-                        Text("ROI Offset X: \(mode.roiOffsetX, specifier: "%.1f")")
-                        Slider(value: $mode.roiOffsetX, in: -200...200)
-
-                        Text("ROI Offset Y: \(mode.roiOffsetY, specifier: "%.1f")")
-                        Slider(value: $mode.roiOffsetY, in: -200...200)
-                    }
-
-
-                    // MARK: - SR Scale
-                    Picker("SR Scale", selection: $mode.srScale) {
-                        Text("1×").tag(Float(1.0))
-                        Text("1.5×").tag(Float(1.5))
-                        Text("2×").tag(Float(2.0))
-                        Text("3×").tag(Float(3.0))
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
-
-
-                    // MARK: - Toggles
-                    Toggle("Show Vectors", isOn: $mode.showVectors)
-                    Toggle("Show Heatmap", isOn: $mode.showHeatmap)
-
-
-                    // MARK: - Telemetry Toggle
-                    Toggle("Show Telemetry", isOn: $showTelemetry)
-                        .padding(.top, 10)
-
-                    if showTelemetry {
-                        DotTestTuningTelemetryBlock()
-                    }
+                    tuningSlider(
+                        label: "Max Corners",
+                        value: Binding(
+                            get: { Double(mode.maxCorners) },
+                            set: { mode.maxCorners = Int($0) }
+                        ),
+                        range: 50...1000
+                    )
                 }
-                .padding()
+
+                // ----------------------------------------------------------
+                // MARK: ROI Controls
+                // ----------------------------------------------------------
+                Group {
+                    sectionLabel("ROI Controls")
+
+                    tuningSlider(
+                        label: "ROI Scale",
+                        value: $mode.roiScale,
+                        range: 0.5...2.5
+                    )
+
+                    tuningSlider(
+                        label: "ROI Offset X",
+                        value: $mode.roiOffsetX,
+                        range: -300...300
+                    )
+
+                    tuningSlider(
+                        label: "ROI Offset Y",
+                        value: $mode.roiOffsetY,
+                        range: -300...300
+                    )
+                }
+
+                // ----------------------------------------------------------
+                // MARK: SR Scale
+                // ----------------------------------------------------------
+                sectionLabel("Super-Resolution")
+
+                Picker("SR Scale", selection: $mode.srScale) {
+                    Text("1×").tag(Float(1.0))
+                    Text("1.5×").tag(Float(1.5))
+                    Text("2×").tag(Float(2.0))
+                    Text("3×").tag(Float(3.0))
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .padding(.horizontal)
+                .foregroundColor(.white)
+
+                // ----------------------------------------------------------
+                // MARK: Overlays
+                // ----------------------------------------------------------
+                Group {
+                    sectionLabel("Overlay Options")
+
+                    Toggle("Show Vectors", isOn: $mode.showVectors)
+                        .foregroundColor(.white)
+
+                    Toggle("Show Heatmap", isOn: $mode.showHeatmap)
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal)
+
+                // ----------------------------------------------------------
+                // MARK: Telemetry Section
+                // ----------------------------------------------------------
+                Toggle("Show Telemetry", isOn: $showTelemetry)
+                    .foregroundColor(.white)
+                    .padding(.horizontal)
+
+                if showTelemetry {
+                    DotTestTelemetryView()
+                        .padding(.horizontal)
+                }
+            }
+            .padding(.vertical, 20)
+        }
+        .background(Color.black.opacity(0.88))
+    }
+}
+
+//
+// MARK: UI Helpers
+//
+
+private func sectionLabel(_ title: String) -> some View {
+    Text(title)
+        .font(.headline)
+        .foregroundColor(.white)
+        .padding(.horizontal)
+}
+
+private func tuningSlider(label: String,
+                          value: Binding<Double>,
+                          range: ClosedRange<Double>) -> some View
+{
+    VStack(alignment: .leading) {
+        Text("\(label): \(value.wrappedValue, specifier: "%.2f")")
+            .foregroundColor(.white)
+        Slider(value: value, in: range)
+    }
+    .padding(.horizontal)
+}
+
+private func tuningSlider(label: String,
+                          value: Binding<CGFloat>,
+                          range: ClosedRange<CGFloat>) -> some View
+{
+    VStack(alignment: .leading) {
+        Text("\(label): \(value.wrappedValue, specifier: "%.2f")")
+            .foregroundColor(.white)
+        Slider(
+            value: Binding(
+                get: { Double(value.wrappedValue) },
+                set: { value.wrappedValue = CGFloat($0) }
+            ),
+            in: Double(range.lowerBound)...Double(range.upperBound)
+        )
+    }
+    .padding(.horizontal)
+}
+
+private func pickerSection<T: Hashable>(
+    title: String,
+    selection: Binding<T>,
+    items: [T],
+    label: @escaping (T) -> Text
+) -> some View {
+    VStack(alignment: .leading) {
+        Text(title)
+            .font(.headline)
+            .foregroundColor(.white)
+        Picker(title, selection: selection) {
+            ForEach(items, id: \.self) { item in
+                label(item).tag(item)
             }
         }
-        .frame(maxWidth: 300)
-        .background(Color.black.opacity(0.85))
+        .pickerStyle(SegmentedPickerStyle())
     }
+    .padding(.horizontal)
 }
 
+//
+// MARK: Enum Display Extensions
+//
 
-// MARK: - Telemetry Block
+extension DotTestMode.Backend {
 
-struct DotTestTuningTelemetryBlock: View {
+    static let all: [DotTestMode.Backend] = [
+        .cpu,
+        .gpuY,
+        .gpuCb,
+        .gpuReadback
+    ]
 
-    @ObservedObject private var mode: DotTestMode = DotTestMode.shared
+    var name: String {
+        switch self {
+        case .cpu:
+            return "CPU"
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        case .gpuY:
+            return "GPU / Y"
 
-            Text("CPU Corners: \(mode.cpuCornerCount)")
-                .foregroundColor(.white)
+        case .gpuCb:
+            return "GPU / Cb"
 
-            Text("GPU Corners: \(mode.gpuCornerCount)")
-                .foregroundColor(.white)
-
-            Text("Matches: \(mode.matchCount)")
-                .foregroundColor(.white)
-
-            Text("CPU Only: \(mode.cpuOnlyCorners.count)")
-                .foregroundColor(.white)
-
-            Text("GPU Only: \(mode.gpuOnlyCorners.count)")
-                .foregroundColor(.white)
-
-            Text("Avg Score: \(mode.avgGpuScore, specifier: "%.2f")")
-                .foregroundColor(.white)
-
-            Text("Min Score: \(mode.minGpuScore, specifier: "%.2f")")
-                .foregroundColor(.white)
-
-            Text("Max Score: \(mode.maxGpuScore, specifier: "%.2f")")
-                .foregroundColor(.white)
-
-            Text("Avg Spatial Error: \(mode.avgSpatialError, specifier: "%.2f") px")
-                .foregroundColor(.white)
-
-            Text("Max Spatial Error: \(mode.maxSpatialError, specifier: "%.2f") px")
-                .foregroundColor(.white)
-
-            Text("NMS Cluster Size: \(mode.nmsClusterSize)")
-                .foregroundColor(.white)
+        case .gpuReadback:
+            return "GPU / Readback"
         }
-        .foregroundColor(.white)
-        .padding()
-        .background(Color.gray.opacity(0.3))
-        .cornerRadius(8)
     }
 }
+extension DotTestMode.DebugSurface {
+    static let all: [DotTestMode.DebugSurface] = [
+        .yRaw, .yNorm, .yEdge,
+        .cbRaw, .cbNorm, .cbEdge,
+        .fast9y, .fast9cb,
+        .mismatchHeatmap,
+        .mixedCorners
+    ]
 
-
-struct DotTestTuningPanel_Previews: PreviewProvider {
-    static var previews: some View {
-        DotTestTuningPanel()
-            .preferredColorScheme(.dark)
+    var name: String {
+        switch self {
+        case .yRaw:            return "Y Raw"
+        case .yNorm:           return "Y Norm"
+        case .yEdge:           return "Y Edge"
+        case .cbRaw:           return "Cb Raw"
+        case .cbNorm:          return "Cb Norm"
+        case .cbEdge:          return "Cb Edge"
+        case .fast9y:          return "FAST9 Y"
+        case .fast9cb:         return "FAST9 Cb"
+        case .mismatchHeatmap: return "Heatmap"
+        case .mixedCorners:    return "Mixed"
+        }
     }
 }

@@ -1,8 +1,7 @@
-//
-//  OrientationLockedWindow.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/10/25.
-//
+import UIKit
 
-import Foundation
+class OrientationLockedWindow: UIWindow {
+    override var rootViewController: UIViewController? {
+        didSet { UIViewController.attemptRotationToDeviceOrientation() }
+    }
+}

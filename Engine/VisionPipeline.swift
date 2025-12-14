@@ -14,14 +14,10 @@ final class VisionPipeline {
     private let lkRefiner = PyrLKRefiner()
     private let velocityTracker = VelocityTracker()
 
-    private let ballClusterClassifier = BallClusterClassifier()
-    private let ballLockStateMachine = BallLockStateMachine()
+    private let ballLock = BallLockV0()
 
-    private let rsDegeneracy = RSDegeneracyCalculator()
-    private var rsWindowBuilder = RSWindowBuilder()
-    private let rspnpSolver = RSPnPSolver()
-
-    private let ballLockConfig: BallLockConfig
+    private var rsWindowBuilder = RSWindow()
+    private let rspnpSolver = RSPnPBridgeV1()
 
     private var prevDots: [VisionDot] = []
     private var prevTrackingState: DotTrackingState = .initial
@@ -34,14 +30,9 @@ final class VisionPipeline {
     private var lastFrameHeight = 0
     private var lastIntrinsics: (Float,Float,Float,Float)?
 
-    init(ballLockConfig: BallLockConfig) {
-        self.ballLockConfig = ballLockConfig
-        reset()
-    }
 
     func reset() {
         dotTracker.reset()
-        ballLockStateMachine.reset()
         prevDots = []
         prevLockedDots = []
         prevPixelBuffer = nil

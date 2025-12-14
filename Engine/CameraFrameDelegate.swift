@@ -1,8 +1,11 @@
 //
 //  CameraFrameDelegate.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/11/25.
 //
 
-import Foundation
+import CoreVideo
+
+@MainActor
+protocol CameraFrameDelegate: AnyObject {
+    /// Called on the MainActor for every captured frame.
+    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer)
+}

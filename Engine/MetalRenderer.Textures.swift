@@ -1,150 +1,108 @@
-import Metal
+//
+// MetalRenderer.Textures.swift
+// Clean modern texture container for DotTest debug surfaces
+//
+
 import Foundation
+import Metal
+
+// -----------------------------------------------------------------------------
+// MARK: - TextureBundle
+// Holds references to each intermediate / debug texture.
+// The renderer does NOT compute sizes — MetalDetector provides real textures.
+// -----------------------------------------------------------------------------
+
+struct TextureBundle {
+
+    // Y-plane pipeline textures
+    var texY:       MTLTexture?
+    var texYNorm:   MTLTexture?
+    var texYEdge:   MTLTexture?
+
+    // Cb-plane pipeline textures
+    var texCb:      MTLTexture?
+    var texCbNorm:  MTLTexture?
+    var texCbEdge:  MTLTexture?
+
+    // FAST9 surfaces
+    var texFast9Y:  MTLTexture?
+    var texFast9Cb: MTLTexture?
+
+    // Mismatch heatmap
+    var texHeatmap: MTLTexture?
+
+    mutating func clearAll() {
+        texY       = nil
+        texYNorm   = nil
+        texYEdge   = nil
+
+        texCb      = nil
+        texCbNorm  = nil
+        texCbEdge  = nil
+
+        texFast9Y  = nil
+        texFast9Cb = nil
+
+        texHeatmap = nil
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: - MetalRenderer extension
+// -----------------------------------------------------------------------------
 
 extension MetalRenderer {
 
-    struct TextureGroup {
-        var texY: MTLTexture?
-        var texYNorm: MTLTexture?
-        var texYEdge: MTLTexture?
-
-        var texYRoi: MTLTexture?
-        var texYRoiSR: MTLTexture?
-
-        var texFast9Y: MTLTexture?
-        var texFast9YScore: MTLTexture?
-
-        var texCb: MTLTexture?
-        var texCbNorm: MTLTexture?
-        var texCbEdge: MTLTexture?
-
-        var texCbRoi: MTLTexture?
-        var texCbRoiSR: MTLTexture?
-
-        var texFast9Cb: MTLTexture?
-        var texFast9CbScore: MTLTexture?
-
-        var texDebugYNorm: MTLTexture?
-        var texDebugYEdge: MTLTexture?
-        var texDebugCbEdge: MTLTexture?
-        var texDebugFast9Y: MTLTexture?
-        var texDebugFast9Cb: MTLTexture?
+    /// Shared texture bundle used by debug router and preview systems.
+    var textures: TextureBundle {
+        get { textureBundle }
+        set { textureBundle = newValue }
     }
 
-    private static var _sharedTextures = TextureGroup()
+    // Private stored bundle
+    private static var textureBundleStorage = TextureBundle()
 
-    var textures: TextureGroup {
-        get { MetalRenderer._sharedTextures }
-        set { MetalRenderer._sharedTextures = newValue }
+    private var textureBundle: TextureBundle {
+        get { Self.textureBundleStorage }
+        set { Self.textureBundleStorage = newValue }
     }
 
-    func makeR8(_ w: Int, _ h: Int) -> MTLTexture? {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm,
-            width: w,
-            height: h,
+    /// Helper: allocate a texture matching an existing texture's size and format.
+    func makeLike(_ tex: MTLTexture?,
+                  pixelFormat: MTLPixelFormat? = nil,
+                  usage: MTLTextureUsage = [.shaderRead, .shaderWrite]) -> MTLTexture? {
+
+        guard let tex = tex else { return nil }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat ?? tex.pixelFormat,
+            width: tex.width,
+            height: tex.height,
             mipmapped: false
         )
-        d.usage = [.shaderRead, .shaderWrite]
-        return device.makeTexture(descriptor: d)
+        desc.usage = usage
+        desc.storageMode = .shared
+
+        return device.makeTexture(descriptor: desc)
     }
 
-    func makeR32F(_ w: Int, _ h: Int) -> MTLTexture? {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float,
-            width: w,
-            height: h,
+    /// Helper: allocate a texture with explicit size.
+    func makeTexture(width: Int,
+                     height: Int,
+                     pixelFormat: MTLPixelFormat,
+                     usage: MTLTextureUsage = [.shaderRead, .shaderWrite]) -> MTLTexture? {
+
+        guard width > 0, height > 0 else { return nil }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: width,
+            height: height,
             mipmapped: false
         )
-        d.usage = [.shaderRead, .shaderWrite]
-        return device.makeTexture(descriptor: d)
-    }
+        desc.usage = usage
+        desc.storageMode = .shared
 
-    func ensureFrameYSize(width: Int, height: Int) {
-        if frameW == width && frameH == height { return }
-        frameW = width
-        frameH = height
-
-        textures.texY = makeR8(width, height)
-        textures.texYNorm = makeR8(width, height)
-        textures.texYEdge = makeR8(width, height)
-    }
-
-    func ensureFrameCbSize(width: Int, height: Int) {
-        let cw = width / 2
-        let ch = height / 2
-        if cbFrameW == cw && cbFrameH == ch { return }
-        cbFrameW = cw
-        cbFrameH = ch
-
-        textures.texCb = makeR8(cw, ch)
-        textures.texCbNorm = makeR8(width, height)
-        textures.texCbEdge = makeR8(width, height)
-    }
-
-    func ensureRoiYSize(width: Int, height: Int) {
-        if roiYW == width && roiYH == height { return }
-        roiYW = width
-        roiYH = height
-        textures.texYRoi = makeR8(width, height)
-    }
-
-    func ensureRoiCbSize(width: Int, height: Int) {
-        let cw = width / 2
-        let ch = height / 2
-        if roiCbW == cw && roiCbH == ch { return }
-        roiCbW = cw
-        roiCbH = ch
-        textures.texCbRoi = makeR8(cw, ch)
-    }
-
-    func ensureSRYSize(width: Int, height: Int) {
-        if srYW == width && srYH == height { return }
-        srYW = width
-        srYH = height
-
-        textures.texYRoiSR = makeR8(width, height)
-        textures.texFast9Y = makeR8(width, height)
-        textures.texFast9YScore = makeR8(width, height)
-    }
-
-    func ensureSRCbSize(width: Int, height: Int) {
-        if srCbW == width && srCbH == height { return }
-        srCbW = width
-        srCbH = height
-
-        textures.texCbRoiSR = makeR8(width, height)
-        textures.texFast9Cb = makeR8(width, height)
-        textures.texFast9CbScore = makeR8(width, height)
-    }
-
-    func allocDebugYNorm() {
-        if let src = textures.texYNorm {
-            textures.texDebugYNorm = makeR8(src.width, src.height)
-        }
-    }
-
-    func allocDebugYEdge() {
-        if let src = textures.texYEdge {
-            textures.texDebugYEdge = makeR8(src.width, src.height)
-        }
-    }
-
-    func allocDebugCbEdge() {
-        if let src = textures.texCbEdge {
-            textures.texDebugCbEdge = makeR8(src.width, src.height)
-        }
-    }
-
-    func allocDebugFast9Y() {
-        if let src = textures.texFast9Y {
-            textures.texDebugFast9Y = makeR8(src.width, src.height)
-        }
-    }
-
-    func allocDebugFast9Cb() {
-        if let src = textures.texFast9Cb {
-            textures.texDebugFast9Cb = makeR8(src.width, src.height)
-        }
+        return device.makeTexture(descriptor: desc)
     }
 }

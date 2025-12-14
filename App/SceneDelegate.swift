@@ -1,8 +1,19 @@
-//
-//  SceneDelegate.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/10/25.
-//
+import UIKit
 
-import Foundation
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+
+        guard let windowScene = scene as? UIWindowScene else { return }
+
+        let window = OrientationLockedWindow(windowScene: windowScene)
+        let vc = DotTestViewController()
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        self.window = window
+    }
+}

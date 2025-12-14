@@ -2,152 +2,229 @@ import Foundation
 import Metal
 import MetalKit
 import CoreVideo
-import simd
 
+struct PreviewUniforms {
+    var debugMode: UInt32
+    var _pad0: UInt32 = 0
+    var threshold: Float
+    var _pad1: Float = 0
+}
+
+struct CornerOut {
+    var x: UInt16
+    var y: UInt16
+    var score: UInt16
+}
+
+struct Counter {
+    var count: UInt32
+}
+@MainActor
 final class MetalRenderer {
-
+    
     static let shared = MetalRenderer()
-
+    
     let device: MTLDevice
     let queue: MTLCommandQueue
     let library: MTLLibrary
+    let previewPSO: MTLRenderPipelineState
     let textureCache: CVMetalTextureCache
-
-    var quad: MTLBuffer!
-    var samplerNearest: MTLSamplerState!
-    var samplerLinear: MTLSamplerState!
-
-    var p_y_extract: MTLComputePipelineState!
-    var p_y_min: MTLComputePipelineState!
-    var p_y_max: MTLComputePipelineState!
-    var p_y_norm: MTLComputePipelineState!
-    var p_y_edge: MTLComputePipelineState!
-    var p_y_crop: MTLComputePipelineState!
-    var p_y_sr: MTLComputePipelineState!
-
-    var p_cb_extract: MTLComputePipelineState!
-    var p_cb_min: MTLComputePipelineState!
-    var p_cb_max: MTLComputePipelineState!
-    var p_cb_norm: MTLComputePipelineState!
-    var p_cb_edge: MTLComputePipelineState!
-    var p_cb_crop: MTLComputePipelineState!
-    var p_cb_sr: MTLComputePipelineState!
-
-    var p_fast9: MTLComputePipelineState!
-    var p_fast9_score: MTLComputePipelineState!
-
-    var p_preview: MTLRenderPipelineState!
-    var p_blit: MTLRenderPipelineState!
-
-    var yCompute: YCompute!
-    var cbCompute: CbCompute!
-    var fast9Compute: Fast9Compute!
-
-    var frameW: Int = 0
-    var frameH: Int = 0
-    var cbFrameW: Int = 0
-    var cbFrameH: Int = 0
-    var roiYW: Int = 0
-    var roiYH: Int = 0
-    var roiCbW: Int = 0
-    var roiCbH: Int = 0
-    var srYW: Int = 0
-    var srYH: Int = 0
-    var srCbW: Int = 0
-    var srCbH: Int = 0
-
+    let sampler: MTLSamplerState
+    let debugTexture: MTLTexture
+    let maxCorners = 4096
+    
+    let cornerBuffer: MTLBuffer
+    let counterBuffer: MTLBuffer
+    
     private init() {
-        device = MTLCreateSystemDefaultDevice()!
-        queue = device.makeCommandQueue()!
-        library = device.makeDefaultLibrary()!
-
-        var tc: CVMetalTextureCache?
-        CVMetalTextureCacheCreate(nil, nil, device, nil, &tc)
-        textureCache = tc!
-
-        let quadData: [Float] = [
-            -1, -1, 0, 1,
-             1, -1, 1, 1,
-            -1,  1, 0, 0,
-             1,  1, 1, 0
-        ]
-        quad = device.makeBuffer(bytes: quadData, length: quadData.count * MemoryLayout<Float>.size)
-
-        let sd0 = MTLSamplerDescriptor()
-        sd0.minFilter = .nearest
-        sd0.magFilter = .nearest
-        sd0.sAddressMode = .clampToEdge
-        sd0.tAddressMode = .clampToEdge
-        samplerNearest = device.makeSamplerState(descriptor: sd0)
-
-        let sd1 = MTLSamplerDescriptor()
-        sd1.minFilter = .linear
-        sd1.magFilter = .linear
-        sd1.sAddressMode = .clampToEdge
-        sd1.tAddressMode = .clampToEdge
-        samplerLinear = device.makeSamplerState(descriptor: sd1)
-
-        buildYPipelines()
-        buildCbPipelines()
-        buildFast9Pipelines()
-        buildRenderPipelines()
-        buildBlitPipelines()
-        buildModules()
-    }
-
-    private func buildYPipelines() {}
-    private func buildCbPipelines() {}
-    private func buildFast9Pipelines() {}
-    private func buildRenderPipelines() {}
-    private func buildBlitPipelines() {}
-    private func buildModules() {}
-}
-private extension MetalRenderer {
-
-    func buildYPipelines() {
-        p_y_extract = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_y_extract")!)
-        p_y_min = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_y_min")!)
-        p_y_max = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_y_max")!)
-        p_y_norm = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_y_norm")!)
-        p_y_edge = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_y_edge")!)
-        p_y_crop = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_roi_crop_y")!)
-        p_y_sr = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_sr_nearest_y")!)
-    }
-
-    func buildCbPipelines() {
-        p_cb_extract = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_cb_extract")!)
-        p_cb_min = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_cb_min")!)
-        p_cb_max = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_cb_max")!)
-        p_cb_norm = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_cb_norm")!)
-        p_cb_edge = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_cb_edge")!)
-        p_cb_crop = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_roi_crop_cb")!)
-        p_cb_sr = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_sr_nearest_cb")!)
-    }
-
-    func buildFast9Pipelines() {
-        p_fast9 = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_fast9_gpu")!)
-        p_fast9_score = try! device.makeComputePipelineState(function: library.makeFunction(name: "k_fast9_score_gpu")!)
-    }
-
-    func buildRenderPipelines() {
+        guard let dev = MTLCreateSystemDefaultDevice() else {
+            fatalError("MTLCreateSystemDefaultDevice() failed")
+        }
+        device = dev
+        
+        guard let q = dev.makeCommandQueue() else {
+            fatalError("makeCommandQueue() failed")
+        }
+        queue = q
+        
+        guard let lib = dev.makeDefaultLibrary() else {
+            fatalError("makeDefaultLibrary() failed")
+        }
+        library = lib
+        
+        let v = library.makeFunction(name: "passthroughVertex")!
+        let f = library.makeFunction(name: "passthroughFragment")!
+        
         let desc = MTLRenderPipelineDescriptor()
-        desc.vertexFunction = library.makeFunction(name: "passthroughVertex")
-        desc.fragmentFunction = library.makeFunction(name: "passthroughFragment")
+        desc.vertexFunction = v
+        desc.fragmentFunction = f
         desc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        p_preview = try! device.makeRenderPipelineState(descriptor: desc)
+        
+        do {
+            previewPSO = try dev.makeRenderPipelineState(descriptor: desc)
+        } catch {
+            fatalError("Failed to create preview pipeline: \(error)")
+        }
+        
+        // Sampler
+        let samplerDesc = MTLSamplerDescriptor()
+        samplerDesc.minFilter = .nearest
+        samplerDesc.magFilter = .nearest
+        samplerDesc.sAddressMode = .clampToEdge
+        samplerDesc.tAddressMode = .clampToEdge
+        
+        guard let samp = dev.makeSamplerState(descriptor: samplerDesc) else {
+            fatalError("Failed to create sampler")
+        }
+        sampler = samp
+        
+        // Texture cache
+        var cache: CVMetalTextureCache?
+        CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, dev, nil, &cache)
+        guard let c = cache else {
+            fatalError("CVMetalTextureCacheCreate failed")
+        }
+        textureCache = c
+        
+        // Debug 1×1 white texture
+        let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: 1,
+            height: 1,
+            mipmapped: false
+        )
+        texDesc.usage = [.shaderRead]
+        
+        guard let dbgTex = dev.makeTexture(descriptor: texDesc) else {
+            fatalError("Failed to create debug texture")
+        }
+        
+        var white: UInt8 = 255
+        dbgTex.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1),
+            mipmapLevel: 0,
+            withBytes: &white,
+            bytesPerRow: 1
+        )
+        
+        debugTexture = dbgTex
+        
+        cornerBuffer = device.makeBuffer(
+            length: MemoryLayout<CornerOut>.stride * maxCorners,
+            options: .storageModeShared
+        )!
+        
+        counterBuffer = device.makeBuffer(
+            length: MemoryLayout<Counter>.stride,
+            options: .storageModeShared
+        )!
+        
     }
-
-    func buildBlitPipelines() {
-        let desc = MTLRenderPipelineDescriptor()
-        desc.vertexFunction = library.makeFunction(name: "copyVertex")
-        desc.fragmentFunction = library.makeFunction(name: "copyFragment")
-        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        p_blit = try! device.makeRenderPipelineState(descriptor: desc)
+    
+    // -------------------------------------------------------------------------
+    // MARK: - Render
+    // -------------------------------------------------------------------------
+    
+    func renderPreview(
+        texture tex: MTLTexture?,
+        in view: MTKView,
+        isR8: Bool,
+        forceSolid: Bool
+    ) {
+        guard
+            let drawable = view.currentDrawable,
+            let pass = view.currentRenderPassDescriptor,
+            let cb = queue.makeCommandBuffer(),
+            let enc = cb.makeRenderCommandEncoder(descriptor: pass)
+        else { return }
+        
+        enc.setRenderPipelineState(previewPSO)
+        
+        enc.setFragmentTexture(tex ?? debugTexture, index: 0)
+        enc.setFragmentSamplerState(sampler, index: 0)
+        
+        enc.setViewport(
+            MTLViewport(
+                originX: 0,
+                originY: 0,
+                width: Double(view.drawableSize.width),
+                height: Double(view.drawableSize.height),
+                znear: 0,
+                zfar: 1
+            )
+        )
+        var uniforms = PreviewUniforms(
+            debugMode: PreviewDebugMode.rawY.rawValue,
+            threshold: 0.5
+        )
+        
+        enc.setFragmentBytes(
+            &uniforms,
+            length: MemoryLayout<PreviewUniforms>.stride,
+            index: 0
+        )
+        enc.setCullMode(.none)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        
+        enc.endEncoding()
+        cb.present(drawable)
+        cb.commit()
     }
-
-    func buildModules() {
-        yCompute = YCompute(device: device, queue: queue)
-        cbCompute = CbCompute(device: device, queue: queue)
-        fast9Compute = Fast9Compute(device: device, queue: queue)
+    
+    // -------------------------------------------------------------------------
+    // MARK: - Y Plane → Metal Texture
+    // -------------------------------------------------------------------------
+    
+    func makeYPlaneTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+        
+        let planeIndex = 0
+        
+        let width  = CVPixelBufferGetWidthOfPlane(pixelBuffer, planeIndex)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, planeIndex)
+        
+        var cvTex: CVMetalTexture?
+        
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault,
+            textureCache,
+            pixelBuffer,
+            nil,
+            .r8Unorm,
+            width,
+            height,
+            planeIndex,
+            &cvTex
+        )
+        
+        if DebugProbe.isEnabled(.capture) {
+           
+        }
+        
+        guard
+            status == kCVReturnSuccess,
+            let metalTex = cvTex.flatMap({ CVMetalTextureGetTexture($0) })
+        else {
+            return nil
+        }
+        
+        return metalTex
+    }
+    
+    func resetCornerCounter() {
+        let ptr = counterBuffer.contents()
+            .bindMemory(to: Counter.self, capacity: 1)
+        ptr.pointee.count = 0
+    }
+    func readCorners() -> [CornerOut] {
+        let counterPtr = counterBuffer.contents()
+            .bindMemory(to: Counter.self, capacity: 1)
+        
+        let count = Int(counterPtr.pointee.count)
+        guard count > 0 else { return [] }
+        
+        let cornerPtr = cornerBuffer.contents()
+            .bindMemory(to: CornerOut.self, capacity: count)
+        
+        return Array(UnsafeBufferPointer(start: cornerPtr, count: count))
     }
 }

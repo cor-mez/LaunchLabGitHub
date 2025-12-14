@@ -1,4 +1,3 @@
-// File: Engine/VisionPipelineActor.swift
 //
 //  VisionPipelineActor.swift
 //  LaunchLab
@@ -12,17 +11,34 @@ import CoreVideo
 
 actor VisionPipelineActor {
 
-    let pipeline: VisionPipeline
-    private var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    // -------------------------------------------------------------------------
+    // MARK: - Stored Properties
+    // -------------------------------------------------------------------------
 
-    init(config: BallLockConfig) {
-        self.pipeline = VisionPipeline(ballLockConfig: config)
+    let pipeline: VisionPipeline
+    private var thermalState: ProcessInfo.ThermalState =
+        ProcessInfo.processInfo.thermalState
+
+    // -------------------------------------------------------------------------
+    // MARK: - Initializer
+    // -------------------------------------------------------------------------
+
+    init(pipeline: VisionPipeline) {
+        self.pipeline = pipeline
     }
+
+    // -------------------------------------------------------------------------
+    // MARK: - Thermal State
+    // -------------------------------------------------------------------------
 
     /// Update the latest thermal state (can be used for gating by caller).
     func updateThermalState(_ state: ProcessInfo.ThermalState) {
         thermalState = state
     }
+
+    // -------------------------------------------------------------------------
+    // MARK: - Frame Processing
+    // -------------------------------------------------------------------------
 
     /// Asynchronous frame processing entry point.
     ///
@@ -37,7 +53,8 @@ actor VisionPipelineActor {
         intrinsics: CameraIntrinsics,
         imu: IMUState
     ) async -> VisionFrameData? {
-        // IMU + thermalState can be used here for future gating if needed.
+
+        // IMU + thermalState can be used here for future gating if needed
         _ = imu
         _ = thermalState
 

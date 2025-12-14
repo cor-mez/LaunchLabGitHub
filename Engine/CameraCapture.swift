@@ -1,84 +1,129 @@
+//
+//  CameraCapture.swift
+//
+
 import AVFoundation
-import CoreVideo
 import UIKit
 
 final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
-    private let session = AVCaptureSession()
-    private let output = AVCaptureVideoDataOutput()
-    private let queue = DispatchQueue(label: "camera.capture.queue")
+    // ---------------------------------------------------------------------
+    // MARK: - Properties
+    // ---------------------------------------------------------------------
 
-    var onFrame: ((CVPixelBuffer) -> Void)?
+    private let session = AVCaptureSession()
+    private let output  = AVCaptureVideoDataOutput()
+
+    /// DotTestViewController gets frames through this delegate
+    weak var delegate: CameraFrameDelegate?
+
+    /// Delivery queue for frame output
+    private let captureQueue = DispatchQueue(
+        label: "camera.capture.queue",
+        qos: .userInitiated
+    )
+
+    // ---------------------------------------------------------------------
+    // MARK: - Init
+    // ---------------------------------------------------------------------
 
     override init() {
         super.init()
-        configure()
+        configureSession()
     }
 
-    private func configure() {
+    // ---------------------------------------------------------------------
+    // MARK: - Session Setup
+    // ---------------------------------------------------------------------
+
+    private func configureSession() {
+
         session.beginConfiguration()
+        session.sessionPreset = .high     // stable 720p → 1080p range
 
-        if session.canSetSessionPreset(.inputPriority) {
-            session.sessionPreset = .inputPriority
-        } else if session.canSetSessionPreset(.high) {
-            session.sessionPreset = .high
-        }
-
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                   for: .video,
-                                                   position: .back) else {
-            return
-        }
-
-        let format = device.formats.first { f in
-            let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
-            return d.width == 1920 && d.height == 1080
-        }
-
-        if let f = format {
-            try? device.lockForConfiguration()
-            device.activeFormat = f
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 240)
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 240)
-            device.unlockForConfiguration()
-        }
-
-        guard let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else {
+        // Camera selection
+        guard let camera = AVCaptureDevice.default(
+            .builtInWideAngleCamera,
+            for: .video,
+            position: .back
+        ) else {
             session.commitConfiguration()
             return
         }
-        session.addInput(input)
 
-        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
-                                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
+        guard let input = try? AVCaptureDeviceInput(device: camera) else {
+            session.commitConfiguration()
+            return
+        }
+
+        if session.canAddInput(input) {
+            session.addInput(input)
+        }
+
+        // Pixel format: REQUIRED for Y→Metal conversion
+        output.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String:
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        ]
+
         output.alwaysDiscardsLateVideoFrames = true
-        output.setSampleBufferDelegate(self, queue: queue)
+        output.setSampleBufferDelegate(self, queue: captureQueue)
 
         if session.canAddOutput(output) {
             session.addOutput(output)
         }
 
+        // Force portrait orientation
+        if let conn = output.connection(with: .video) {
+            conn.videoOrientation = .portrait
+            conn.isVideoMirrored = false
+        }
+
         session.commitConfiguration()
     }
 
+    // ---------------------------------------------------------------------
+    // MARK: - Control
+    // ---------------------------------------------------------------------
+
     func start() {
-        if session.isRunning == false {
-            session.startRunning()
-        }
+        guard !session.isRunning else { return }
+        captureQueue.async { self.session.startRunning() }
     }
 
     func stop() {
-        if session.isRunning {
-            session.stopRunning()
-        }
+        guard session.isRunning else { return }
+        captureQueue.async { self.session.stopRunning() }
     }
 
-    func captureOutput(_ output: AVCaptureOutput,
-                       didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection)
-    {
+    // ---------------------------------------------------------------------
+    // MARK: - Frame Delivery
+    // ---------------------------------------------------------------------
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+
+        // Extract pixel buffer
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        onFrame?(pb)
+
+        // Debug fourCC
+        if let desc = CMSampleBufferGetFormatDescription(sampleBuffer) {
+            let fourCC = CMFormatDescriptionGetMediaSubType(desc)
+
+            // Portable 4-char formatter
+            let c1 = Character(UnicodeScalar((fourCC >> 24) & 0xFF)!)
+            let c2 = Character(UnicodeScalar((fourCC >> 16) & 0xFF)!)
+            let c3 = Character(UnicodeScalar((fourCC >> 8)  & 0xFF)!)
+            let c4 = Character(UnicodeScalar( fourCC        & 0xFF)!)
+
+        }
+
+        // Deliver to main thread → DotTestViewController
+        Task { @MainActor in
+            self.delegate?.cameraDidOutput(pb)
+        }
     }
 }

@@ -111,7 +111,7 @@ public struct RPEResidual: Sendable {
 // MARK: - RSPnPResult (Frozen SE3 Contract)
 // ============================================================
 
-public struct RSPnPResult: Sendable {
+public struct RSPnP_V1: Sendable {
 
     public let R: simd_float3x3
     public let t: SIMD3<Float>
@@ -212,7 +212,7 @@ public struct VisionFrameData {
     public let trackingState: DotTrackingState
     public let bearings: [Float]?
     public let correctedPoints: [CGPoint]?
-    public let rspnp: RSPnPResult?
+    public let rspnp: RSPnP_V1?
     public let spin: SpinResult?
     public let spinDrift: SpinDriftMetrics?
     public let residuals: [RPEResidual]?
@@ -232,7 +232,7 @@ public struct VisionFrameData {
         trackingState: DotTrackingState,
         bearings: [Float]?,
         correctedPoints: [CGPoint]?,
-        rspnp: RSPnPResult?,
+        rspnp: RSPnP_V1?,
         spin: SpinResult?,
         spinDrift: SpinDriftMetrics?,
         residuals: [RPEResidual]?,

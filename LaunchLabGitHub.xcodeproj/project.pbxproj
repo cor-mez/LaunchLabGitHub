@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		05BE35F32ECBB078000AB2AF /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 05BE35F22ECBB06D000AB2AF /* .gitignore */; };
+		05D0AC902EEE18B4002B7EFE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 05D0AC8F2EEE18B4002B7EFE /* Assets.xcassets */; };
 		05F8339C2ECAFA320053B9D5 /* LaunchLab.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */; };
 /* End PBXBuildFile section */
 
@@ -33,12 +34,13 @@
 		05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		05BE35F22ECBB06D000AB2AF /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		05D0AC8F2EEE18B4002B7EFE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LaunchLab.xcconfig; sourceTree = "<group>"; };
 		05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LaunchLabGithub.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		051316332ED1462E00B539FF /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
+		059792932EEA115D00603B25 /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -51,14 +53,9 @@
 		051316302ED1451D00B539FF /* info */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				051316332ED1462E00B539FF /* Exceptions for "info" folder in "LaunchLabGitHub" target */,
+				059792932EEA115D00603B25 /* Exceptions for "info" folder in "LaunchLabGitHub" target */,
 			);
 			path = info;
-			sourceTree = "<group>";
-		};
-		051317122ED6978B00B539FF /* Cpp */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Cpp;
 			sourceTree = "<group>";
 		};
 		0513171E2ED69AB800B539FF /* App */ = {
@@ -69,11 +66,6 @@
 		05F833642ECAF8450053B9D5 /* Engine */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Engine;
-			sourceTree = "<group>";
-		};
-		05F833692ECAF8450053B9D5 /* Overlays */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Overlays;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -108,24 +100,15 @@
 			children = (
 				05BE35F22ECBB06D000AB2AF /* .gitignore */,
 				0513171E2ED69AB800B539FF /* App */,
-				051317122ED6978B00B539FF /* Cpp */,
+				05D0AC8F2EEE18B4002B7EFE /* Assets.xcassets */,
 				05F833642ECAF8450053B9D5 /* Engine */,
-				05F8339A2ECAF93E0053B9D5 /* Frameworks */,
 				051316302ED1451D00B539FF /* info */,
 				05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */,
 				05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */,
 				05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */,
 				05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */,
 				05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */,
-				05F833692ECAF8450053B9D5 /* Overlays */,
 			);
-			sourceTree = "<group>";
-		};
-		05F8339A2ECAF93E0053B9D5 /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -145,10 +128,8 @@
 			);
 			fileSystemSynchronizedGroups = (
 				051316302ED1451D00B539FF /* info */,
-				051317122ED6978B00B539FF /* Cpp */,
 				0513171E2ED69AB800B539FF /* App */,
 				05F833642ECAF8450053B9D5 /* Engine */,
-				05F833692ECAF8450053B9D5 /* Overlays */,
 			);
 			name = LaunchLabGitHub;
 			packageProductDependencies = (
@@ -247,6 +228,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				05BE35F32ECBB078000AB2AF /* .gitignore in Resources */,
+				05D0AC902EEE18B4002B7EFE /* Assets.xcassets in Resources */,
 				05F8339C2ECAFA320053B9D5 /* LaunchLab.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -448,14 +430,15 @@
 					"$(PROJECT_DIR)/Frameworks",
 				);
 				GCC_C_LANGUAGE_STANDARD = "C++17";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
-				INFOPLIST_FILE = info/Info.plist;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_FILE = /Users/corymeza/Developer/LaunchLabGitHub/info/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
@@ -504,14 +487,15 @@
 					"$(PROJECT_DIR)/Frameworks",
 				);
 				GCC_C_LANGUAGE_STANDARD = "C++17";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
-				INFOPLIST_FILE = info/Info.plist;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_FILE = /Users/corymeza/Developer/LaunchLabGitHub/info/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
