@@ -1,5 +1,6 @@
 //
 //  RSPnPPoseStabilityCharacterizer.swift
+<<<<<<< HEAD
 //  Engine
 //
 //  Pose Consumption & Stability Characterization (observational only)
@@ -271,3 +272,11 @@ private struct OnlineCorrelation {
         return denom > 0 ? c / denom : nil
     }
 }
+=======
+//  LaunchLabGitHub
+//
+//  Created by Cory Meza on 12/15/25.
+//
+
+import Foundation
+>>>>>>> 2c38488853e3a13fad4b6fe43eee4a25690abc36

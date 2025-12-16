@@ -1,5 +1,6 @@
 //
 //  RSWindow+RSPnPEnvelopeTelemetry.swift
+<<<<<<< HEAD
 //  Engine
 //
 //  Telemetry exposure only — DO NOT change validity logic.
@@ -41,3 +42,11 @@ extension RSWindowSnapshot: RSPnPWindowTelemetryProviding {
         return (dx * dx + dy * dy).squareRoot()
     }
 }
+=======
+//  LaunchLabGitHub
+//
+//  Created by Cory Meza on 12/15/25.
+//
+
+import Foundation
+>>>>>>> 2c38488853e3a13fad4b6fe43eee4a25690abc36

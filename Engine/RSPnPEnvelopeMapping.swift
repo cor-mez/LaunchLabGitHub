@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 //RSPnPEnvelopeMapping.swift//
 
 import Foundation
@@ -96,3 +97,13 @@ public final class RSPnPEnvelopeMapper {
         }
     }
 }
+=======
+//
+//  RSPnpEnvelopeMapping.swift
+//  LaunchLabGitHub
+//
+//  Created by Cory Meza on 12/15/25.
+//
+
+import Foundation
+>>>>>>> 2c38488853e3a13fad4b6fe43eee4a25690abc36
