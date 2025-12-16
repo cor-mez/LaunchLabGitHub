@@ -27,9 +27,13 @@ final class DotTestCoordinator {
     private var ballLockHoldFrames: Int = 0
     private let maxHoldFrames: Int = 5
     private let matchDist: CGFloat = 2.0
-    
     private var heatmapCounter = 0
     private let heatmapThrottle = 4
+    
+    // MARK: - Markerless Discrimination Gates (MDG)
+    private let mdg = MarkerlessDiscriminationGates()
+    private var mdgBallLikeEvidence: Bool = false
+    private var mdgRejectReason: String? = nil
     
     private init() {}
     
@@ -710,6 +714,30 @@ final class DotTestCoordinator {
             if DebugProbe.isEnabled(.capture) {
                 print("[BALLLOCK] lock maintained count=\(lastBallLockCount)")
             }
+
+            // -----------------------------------------------------------------
+            // MDG (Markerless Discrimination Gates) — PRE-POSE truth hardening
+            // IMPORTANT:
+            // - Do NOT modify BallLock state (memory/count/smoothing)
+            // - Only gate "promotion to trusted evidence" downstream
+            // -----------------------------------------------------------------
+            let mdgDecision = mdg.evaluate(
+                points: finalBallLockPoints,
+                candidateCenter: cluster.center,
+                candidateRadiusPx: cluster.radius,
+                timestampSec: Double(frameIndex)
+            )
+
+            mdgBallLikeEvidence = mdgDecision.ballLikeEvidence
+            mdgRejectReason = mdgDecision.reason
+
+            // Example downstream gating (ONLY if you have a downstream consumer here):
+            // if mdgBallLikeEvidence {
+            //     // promote to RSWindow / pose-eligibility later
+            // } else {
+            //     // do NOT promote; refusal is correctness
+            // }
+        
         } else if var mem = ballLockMemory {
             
             // Density hysteresis: allow brief thinning
