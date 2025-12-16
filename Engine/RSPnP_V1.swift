@@ -77,7 +77,8 @@ enum RSPnPFailure: Equatable {
 final class RSPnPBridgeV1 {
 
     private let config: RSPnPConfig
-
+    private let poseStability = RSPnPPoseStabilityCharacterizer()
+    
     // Logging state to prevent per-frame spam.
     private enum LogState: Equatable {
         case idleSkip(String)
@@ -149,9 +150,23 @@ final class RSPnPBridgeV1 {
     }
 
     private func solveV1(window: RSWindowSnapshot) -> RSPnPOutcome {
-        // Bridge-only V1: correctness + observability.
-        // Real RS-PnP implementation plugs in here later.
-        return .failure(.notImplementedV1)
+
+        // ------------------------------------------------------------
+        // Placeholder V1 implementation — always fails for now
+        // ------------------------------------------------------------
+        let result: RSPnPOutcome = .failure(.notImplementedV1)
+
+        // ------------------------------------------------------------
+        // Pose Stability Observation (NO POSE PATH)
+        // ------------------------------------------------------------
+        // This is correct behavior: since no pose exists,
+        // explicitly tell the observer "no pose this frame".
+        poseStability.observeNoPose(
+            nowSec: window.snapshotTimeSec,
+            reason: "not_implemented_v1"
+        )
+
+        return result
     }
 
     // MARK: - Logging (state transitions only)

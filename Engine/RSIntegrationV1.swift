@@ -2,7 +2,7 @@
 //  RSIntegrationV1.swift
 //  LaunchLab
 //
-//  Confidence-gated bridge: BallLock → RSWindow → RSPnP solver
+//  Confidence-gated bridge: BallLock → RSWindow → RS-PnP
 //  Observability + correctness first
 //
 
@@ -22,19 +22,29 @@ final class RSIntegrationV1 {
         var logTransitionsOnly: Bool = true
     }
 
-    // MARK: - State
+    // MARK: - RSWindow Logging State (de-duplication only)
+
+    private enum RSWindowLogState: Equatable {
+        case idle
+        case rejectedLowConfidence
+        case accepted(count: Int)
+        case windowReady(count: Int)
+        case windowInvalid(reason: String)
+    }
+
+    // MARK: - Solver / Integration State
 
     private enum State: Equatable {
         case cold
-        case rejectedLowConfidence
-        case accepted(Int)
-        case windowReady(Int)
         case solverSkipped(String)
         case solverFailed(String)
         case solverSucceeded
     }
 
+    // MARK: - State Storage
+
     private var state: State = .cold
+    private var rsWindowLogState: RSWindowLogState = .idle
 
     // MARK: - Members
 
@@ -55,6 +65,19 @@ final class RSIntegrationV1 {
         )
     }
 
+    // MARK: - RSWindow Logging (transition-only)
+
+    private func logRSWindow(
+        _ newState: RSWindowLogState,
+        _ message: String
+    ) {
+        guard DebugProbe.isEnabled(.capture) else { return }
+        guard newState != rsWindowLogState else { return }
+
+        rsWindowLogState = newState
+        print(message)
+    }
+
     // MARK: - Ingest
 
     func ingest(
@@ -66,34 +89,61 @@ final class RSIntegrationV1 {
 
         // 1️⃣ Confidence gate
         guard smoothedBallLockCount >= config.confidenceThreshold else {
-            log(.rejectedLowConfidence,
-                "[RSWINDOW] rejected (confidence < threshold) conf=\(fmt(smoothedBallLockCount))")
+            logRSWindow(
+                .rejectedLowConfidence,
+                "[RSWINDOW] rejected (confidence < threshold) conf=\(fmt(smoothedBallLockCount)) < \(fmt(config.confidenceThreshold))"
+            )
             return
         }
 
         // 2️⃣ Feed RSWindow
         window.ingest(
             ballCenter2D: ballCenter2D,
-            ballRadiusPx: ballRadiusPx,            timestampSec: timestampSec,
+            ballRadiusPx: ballRadiusPx,
+            timestampSec: timestampSec,
             confidence: smoothedBallLockCount
         )
 
-        log(.accepted(window.frameCount),
-            "[RSWINDOW] accepted frame t=\(fmt(timestampSec)) count=\(window.frameCount)")
+        logRSWindow(
+            .accepted(count: window.frameCount),
+            "[RSWINDOW] accepted frame t=\(fmt(timestampSec)) count=\(window.frameCount) conf=\(fmt(smoothedBallLockCount))"
+        )
 
-        // 3️⃣ Snapshot
+        // 3️⃣ Snapshot + validity gate
         let snapshot = window.snapshot(nowSec: timestampSec)
 
         guard snapshot.isValid else {
-            log(.accepted(snapshot.frameCount),
-                "[RSWINDOW] window not ready span=\(fmt(snapshot.spanSec)) stale=\(fmt(snapshot.stalenessSec))")
+            let reason: String
+            if snapshot.stalenessSec > config.maxStalenessSec {
+                reason = "stale \(fmt(snapshot.stalenessSec))s"
+            } else if snapshot.spanSec > config.maxSpanSec {
+                reason = "span \(fmt(snapshot.spanSec))s"
+            } else {
+                reason = "insufficient frames"
+            }
+
+            logRSWindow(
+                .windowInvalid(reason: reason),
+                "[RSWINDOW] invalid \(reason) count=\(snapshot.frameCount)"
+            )
             return
         }
 
-        log(.windowReady(snapshot.frameCount),
-            "[RSWINDOW] window ready count=\(snapshot.frameCount)")
+        logRSWindow(
+            .windowReady(count: snapshot.frameCount),
+            "[RSWINDOW] window ready count=\(snapshot.frameCount) span=\(fmt(snapshot.spanSec))s"
+        )
 
-        // 4️⃣ Solver
+        if DebugProbe.isEnabled(.capture) {
+            print("""
+            [RSWINDOW][SNAPSHOT]
+              frames=\(snapshot.frameCount)
+              span=\(fmt(snapshot.spanSec))
+              stale=\(fmt(snapshot.stalenessSec))
+            """)
+        }
+
+        // 4️⃣ RS-PnP (still observability-first)
         let result = solver.process(window: snapshot)
 
         switch result {
@@ -108,7 +158,7 @@ final class RSIntegrationV1 {
         }
     }
 
-    // MARK: - Logging
+    // MARK: - Solver Logging
 
     private func log(_ newState: State, _ message: String) {
         guard DebugProbe.isEnabled(.capture) else { return }
@@ -117,6 +167,13 @@ final class RSIntegrationV1 {
         print(message)
     }
 
-    private func fmt(_ v: Double) -> String { String(format: "%.3f", v) }
-    private func fmt(_ v: Float)  -> String { String(format: "%.2f", v) }
+    // MARK: - Formatting
+
+    private func fmt(_ v: Double) -> String {
+        String(format: "%.3f", v)
+    }
+
+    private func fmt(_ v: Float) -> String {
+        String(format: "%.2f", v)
+    }
 }
