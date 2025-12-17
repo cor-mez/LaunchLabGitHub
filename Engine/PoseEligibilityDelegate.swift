@@ -1,8 +1,13 @@
-//
-//  PoseEligibilityDelegate.swift
-//  LaunchLabGitHub
-//
-//  Created by Cory Meza on 12/16/25.
-//
+import CoreGraphics
 
-import Foundation
+/// Pure signaling contract.
+/// No pose, no solver, no window access.
+protocol PoseEligibilityDelegate: AnyObject {
+    func ballLikeClusterDetected(
+        center: CGPoint,
+        radiusPx: CGFloat,
+        confidence: Float,
+        frameIndex: Int
+    )
+}
+

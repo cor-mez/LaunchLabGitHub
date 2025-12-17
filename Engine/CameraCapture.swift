@@ -1,5 +1,6 @@
 //
 //  CameraCapture.swift
+//  LaunchLab
 //
 
 import AVFoundation
@@ -13,6 +14,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private let session = AVCaptureSession()
     private let output  = AVCaptureVideoDataOutput()
+    private var videoDevice: AVCaptureDevice?
 
     /// DotTestViewController gets frames through this delegate
     weak var delegate: CameraFrameDelegate?
@@ -39,7 +41,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func configureSession() {
 
         session.beginConfiguration()
-        session.sessionPreset = .high     // stable 720p → 1080p range
+        session.sessionPreset = .high   // DO NOT use this to control FPS
 
         // Camera selection
         guard let camera = AVCaptureDevice.default(
@@ -51,6 +53,8 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             return
         }
 
+        self.videoDevice = camera
+
         guard let input = try? AVCaptureDeviceInput(device: camera) else {
             session.commitConfiguration()
             return
@@ -60,7 +64,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             session.addInput(input)
         }
 
-        // Pixel format: REQUIRED for Y→Metal conversion
+        // Pixel format: REQUIRED for Y/CbCr Metal pipeline
         output.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String:
                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
@@ -73,7 +77,6 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             session.addOutput(output)
         }
 
-        // Force portrait orientation
         if let conn = output.connection(with: .video) {
             conn.videoOrientation = .portrait
             conn.isVideoMirrored = false
@@ -83,12 +86,127 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     // ---------------------------------------------------------------------
+    // MARK: - High-Speed Format Selection
+    // ---------------------------------------------------------------------
+
+    private func selectBestHighSpeedFormat(
+        device: AVCaptureDevice,
+        targetFPS: Double
+    ) -> AVCaptureDevice.Format? {
+
+        let candidates: [(AVCaptureDevice.Format, AVFrameRateRange)] =
+            device.formats.compactMap { format in
+                for range in format.videoSupportedFrameRateRanges {
+                    if range.minFrameRate <= targetFPS &&
+                       targetFPS <= range.maxFrameRate {
+                        return (format, range)
+                    }
+                }
+                return nil
+            }
+
+        // Prefer highest resolution format that supports the FPS
+        return candidates
+            .sorted { a, b in
+                let da = CMVideoFormatDescriptionGetDimensions(a.0.formatDescription)
+                let db = CMVideoFormatDescriptionGetDimensions(b.0.formatDescription)
+                return (da.width * da.height) > (db.width * db.height)
+            }
+            .first?
+            .0
+    }
+
+    // ---------------------------------------------------------------------
+    // MARK: - Camera Locking (Measurement Mode)
+    // ---------------------------------------------------------------------
+
+    func lockCameraForMeasurement(device: AVCaptureDevice) {
+
+        let desiredFPS: Double = 240
+
+        do {
+            try device.lockForConfiguration()
+
+            // ----------------------------
+            // Select a format that actually supports 240 FPS
+            // ----------------------------
+            if let format = selectBestHighSpeedFormat(
+                device: device,
+                targetFPS: desiredFPS
+            ) {
+                device.activeFormat = format
+            } else {
+                print("[CAMERA] ⚠️ No format supports \(desiredFPS) FPS on this device")
+                device.unlockForConfiguration()
+                return
+            }
+
+            // ----------------------------
+            // Focus
+            // ----------------------------
+            if device.isFocusModeSupported(.locked) {
+                device.focusMode = .continuousAutoFocus
+                device.focusMode = .locked
+            }
+
+            // ----------------------------
+            // Exposure
+            // ----------------------------
+            if device.isExposureModeSupported(.locked) {
+                device.exposureMode = .continuousAutoExposure
+                device.exposureMode = .locked
+            }
+
+            // ----------------------------
+            // White Balance
+            // ----------------------------
+            if device.isWhiteBalanceModeSupported(.locked) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+                device.whiteBalanceMode = .locked
+            }
+
+            // ----------------------------
+            // Frame Rate (now SAFE)
+            // ----------------------------
+            let duration = CMTime(
+                value: 1,
+                timescale: CMTimeScale(desiredFPS)
+            )
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+
+            device.unlockForConfiguration()
+
+            if DebugProbe.isEnabled(.capture) {
+                print(
+                    "[CAMERA] locked fps=\(desiredFPS) " +
+                    "iso=\(device.iso) " +
+                    "shutter=\(CMTimeGetSeconds(device.exposureDuration))"
+                )
+            }
+
+        } catch {
+            print("[CAMERA] lock failed: \(error)")
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // MARK: - Control
     // ---------------------------------------------------------------------
 
     func start() {
         guard !session.isRunning else { return }
-        captureQueue.async { self.session.startRunning() }
+
+        captureQueue.async {
+            self.session.startRunning()
+
+            // Allow AF/AE to settle, then lock
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if let device = self.videoDevice {
+                    self.lockCameraForMeasurement(device: device)
+                }
+            }
+        }
     }
 
     func stop() {
@@ -106,22 +224,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         from connection: AVCaptureConnection
     ) {
 
-        // Extract pixel buffer
-        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        // Debug fourCC
-        if let desc = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            let fourCC = CMFormatDescriptionGetMediaSubType(desc)
-
-            // Portable 4-char formatter
-            let c1 = Character(UnicodeScalar((fourCC >> 24) & 0xFF)!)
-            let c2 = Character(UnicodeScalar((fourCC >> 16) & 0xFF)!)
-            let c3 = Character(UnicodeScalar((fourCC >> 8)  & 0xFF)!)
-            let c4 = Character(UnicodeScalar( fourCC        & 0xFF)!)
-
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
         }
 
-        // Deliver to main thread → DotTestViewController
         Task { @MainActor in
             self.delegate?.cameraDidOutput(pb)
         }

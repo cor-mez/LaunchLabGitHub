@@ -29,6 +29,7 @@ final class DotTestCoordinator {
     private let matchDist: CGFloat = 2.0
     private var heatmapCounter = 0
     private let heatmapThrottle = 4
+    weak var poseEligibilityDelegate: PoseEligibilityDelegate?
     
     // MARK: - Markerless Discrimination Gates (MDG)
     private let mdg = MarkerlessDiscriminationGates()
@@ -43,7 +44,21 @@ final class DotTestCoordinator {
         var age: Int
     }
     private var ballLockMemory: BallLockMemory?
-    
+    // RS-PnP Minimal Solve + Pose Stability Characterization (observational only)
+    // MARK: - RS-PnP Minimal Solve + Pose Stability (observational only)
+
+    private let rspnpPoseModule = RSPnPMinimalSolveAndPoseStabilityModule(
+        config: .init(
+            enabled: true,
+            confidenceThreshold: 12.0,
+            logTransitionsOnly: true
+        ),
+        poseConfig: .init(
+            historySize: 20,
+            minSamplesForCorrelation: 8,
+            logEveryNSuccesses: 1
+        )
+    )
     
     // MARK: - Simple Spatial NMS (CPU, deterministic)
     
@@ -150,7 +165,7 @@ final class DotTestCoordinator {
         // HARD ROI CLAMP (TEST MODE)
         // ---------------------------------------------------------------------
         
-        let roiSize: CGFloat = 80  // start here (try 160 or 96 later)
+        let roiSize: CGFloat = 100 // start here (try 160 or 96 later)
         
         let roi = CGRect(
             x: fullSz.width  * 0.5 - roiSize * 0.5,
@@ -691,11 +706,11 @@ final class DotTestCoordinator {
             }
         }
         
-        // ---------------------------------------------------------------------
         // 8. BallLock + temporal memory
-        // ---------------------------------------------------------------------
+   
         if let cluster = ballLock.findBallCluster(from: finalBallLockPoints) {
 
+            // ----- BallLock bookkeeping (unchanged) -----
             ballLockHoldFrames = 0
 
             let alpha: Float = 0.3
@@ -716,10 +731,11 @@ final class DotTestCoordinator {
             }
 
             // -----------------------------------------------------------------
+            // -----------------------------------------------------------------
             // MDG (Markerless Discrimination Gates) — PRE-POSE truth hardening
             // IMPORTANT:
             // - Do NOT modify BallLock state (memory/count/smoothing)
-            // - Only gate "promotion to trusted evidence" downstream
+            // - Only signal pose eligibility downstream
             // -----------------------------------------------------------------
             let mdgDecision = mdg.evaluate(
                 points: finalBallLockPoints,
@@ -731,14 +747,27 @@ final class DotTestCoordinator {
             mdgBallLikeEvidence = mdgDecision.ballLikeEvidence
             mdgRejectReason = mdgDecision.reason
 
-            // Example downstream gating (ONLY if you have a downstream consumer here):
-            // if mdgBallLikeEvidence {
-            //     // promote to RSWindow / pose-eligibility later
-            // } else {
-            //     // do NOT promote; refusal is correctness
-            // }
-        
+            if mdgBallLikeEvidence {
+                // 🔔 Signal pose eligibility ONLY
+                // No pose solve here
+                // No RSWindow access here
+                // No solver invocation here
+                poseEligibilityDelegate?.ballLikeClusterDetected(
+                    center: cluster.center,
+                    radiusPx: cluster.radius,
+                    confidence: smoothedBallLockCount,
+                    frameIndex: frameIndex
+                )
+            }
+
         } else if var mem = ballLockMemory {
+
+            // IMPORTANT:
+            // Memory frames are NEVER pose-eligible
+            mdgBallLikeEvidence = false
+            mdgRejectReason = "memory_frame"
+
+            // existing memory logic continues below…
             
             // Density hysteresis: allow brief thinning
             let effectiveCount = max(finalBallLockPoints.count, lastBallLockCount)
@@ -747,7 +776,8 @@ final class DotTestCoordinator {
                 // True collapse
                 ballLockMemory = nil
                 lastBallLockCount = 0
-                
+                mdgBallLikeEvidence = false
+                mdgRejectReason = "balllock_reset"
                 if DebugProbe.isEnabled(.capture) {
                     print("[BALLLOCK] reset (density collapse)")
                 }

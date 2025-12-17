@@ -1,54 +1,40 @@
+//
+//  RSPnP_V1.swift
+//  LaunchLab
+//
+//  Minimal RS-PnP bridge (observational only)
+//  - refusal-first
+//  - no smoothing
+//  - no retries
+//  - no downstream pose consumption
+//
+
 import Foundation
 import CoreGraphics
 import simd
 
-// MARK: - RS‑PnP Bridge V1
-// IMPORTANT:
-// VisionTypes.swift already defines `public struct RSPnP_V1` as the frozen SE3 contract payload.
-// This file must NOT declare another `RSPnP_V1` type, so the solver class is named `RSPnPBridgeV1`.
+// MARK: - Config
 
 struct RSPnPConfig: Equatable {
-    /// Minimum frames required to even attempt a solve.
     var minFrames: Int = 3
-
-    /// If true, fail when any frame lacks rolling shutter metadata.
-    /// (Keep false for V1 unless timing is wired.)
     var requireRowTiming: Bool = false
-
-    init(minFrames: Int = 3, requireRowTiming: Bool = false) {
-        self.minFrames = max(1, minFrames)
-        self.requireRowTiming = requireRowTiming
-    }
 }
 
-/// Control-flow outcome for the bridge (NOT the frozen SE3 contract payload).
-enum RSPnPOutcome: Equatable {
-    case success(RSPnPSolution)
-    case failure(RSPnPFailure)
-    case skipped(RSPnPSkip)
-}
+// MARK: - Outcome Types
 
-struct RSPnPSolution: Equatable {
-    let orientation: simd_quatf
-    let translation: SIMD3<Float>?
-    let residual: Float
-    let conditioning: Float?
-    let timestampSec: Double
-    let frameCount: Int
-}
-
-enum RSPnPSkip: Equatable {
-    case insufficientWindow(reason: String)
-    case invalidWindow(reason: String)
+enum RSPnPSkipReason: Equatable {
     case insufficientFrames(count: Int, min: Int)
+    case invalidWindow(reason: String)
     case alreadyProcessed(windowLastTimestamp: Double)
 
     var logString: String {
         switch self {
-        case .insufficientWindow(let r): return "skipped (insufficient window) \(r)"
-        case .invalidWindow(let r): return "skipped (invalid window) \(r)"
-        case .insufficientFrames(let c, let m): return "skipped (insufficient frames \(c) < \(m))"
-        case .alreadyProcessed(let t): return "skipped (already processed lastT=\(String(format: "%.3f", t)))"
+        case .insufficientFrames(let c, let m):
+            return "skipped insufficientFrames \(c)<\(m)"
+        case .invalidWindow(let r):
+            return "skipped invalidWindow \(r)"
+        case .alreadyProcessed(let t):
+            return "skipped alreadyProcessed t=\(String(format: "%.6f", t))"
         }
     }
 }
@@ -57,68 +43,103 @@ enum RSPnPFailure: Equatable {
     case missingRowTiming
     case nonFiniteInput
     case notImplementedV1
-    case internalError(String)
 
     var logString: String {
         switch self {
-        case .missingRowTiming: return "failure reason=missingRowTiming"
-        case .nonFiniteInput: return "failure reason=nonFiniteInput"
-        case .notImplementedV1: return "failure reason=notImplementedV1"
-        case .internalError(let s): return "failure reason=internalError(\(s))"
+        case .missingRowTiming: return "failure missingRowTiming"
+        case .nonFiniteInput:   return "failure nonFiniteInput"
+        case .notImplementedV1: return "failure notImplementedV1"
         }
     }
 }
 
+enum RSPnPOutcome: Equatable {
+    case skipped(RSPnPSkipReason)
+    case failure(RSPnPFailure)
+    case success(
+        pose: simd_double4x4,
+        residual: Double,
+        conditioning: Double
+    )
+}
+
+// MARK: - RS-PnP Bridge
+
 /// V1 bridge solver:
 /// - accepts an RSWindowSnapshot
 /// - attempts solve ONLY when snapshot is valid + frameCount >= minFrames
-/// - returns explicit success/failure/skipped
+/// - returns explicit success / failure / skipped
 /// - logs on state transitions only
 final class RSPnPBridgeV1 {
-
-    private let config: RSPnPConfig
-    private let poseStability = RSPnPPoseStabilityCharacterizer()
     
-    // Logging state to prevent per-frame spam.
+    // MARK: - Config
+    
+    private let config: RSPnPConfig
+    
+    // Pose stability observer (OBSERVATIONAL ONLY)
+    private let poseStability = RSPnPPoseStabilityCharacterizer(
+        config: RSPnPPoseStabilityConfig(
+            historySize: 20,
+            minSamplesForCorrelation: 8,
+            logEveryNSuccesses: 1
+        )
+    )
+    
+    // MARK: - Logging State (anti-spam)
+    
     private enum LogState: Equatable {
         case idleSkip(String)
         case attempting
         case success
         case failure(String)
     }
+    
     private var logState: LogState = .idleSkip("startup")
-
-    // Prevent redundant attempts on identical window end timestamps.
+    
+    // Prevent redundant attempts on identical window end timestamps
     private var lastProcessedWindowLastT: Double? = nil
-
+    
+    // MARK: - Init
+    
     init(config: RSPnPConfig = RSPnPConfig()) {
         self.config = config
     }
-
+    
+    // MARK: - Entry
+    
     func process(window: RSWindowSnapshot) -> RSPnPOutcome {
-
+        
         guard window.frameCount >= config.minFrames else {
-            let res: RSPnPOutcome = .skipped(.insufficientFrames(count: window.frameCount, min: config.minFrames))
+            let res: RSPnPOutcome =
+                .skipped(.insufficientFrames(
+                    count: window.frameCount,
+                    min: config.minFrames
+                ))
             logTransitionIfNeeded(result: res, window: window)
             return res
         }
-
+        
         guard window.isValid else {
-            let res: RSPnPOutcome = .skipped(.invalidWindow(
-                reason: "valid=false count=\(window.frameCount)"
-            ))
+            let res: RSPnPOutcome =
+                .skipped(.invalidWindow(
+                    reason: "valid=false count=\(window.frameCount)"
+                ))
             logTransitionIfNeeded(result: res, window: window)
             return res
         }
-
+        
         if let lastT = window.frames.last?.timestampSec,
            let prev = lastProcessedWindowLastT,
            abs(lastT - prev) < 1e-9 {
-            let res: RSPnPOutcome = .skipped(.alreadyProcessed(windowLastTimestamp: lastT))
+            
+            let res: RSPnPOutcome =
+                .skipped(.alreadyProcessed(
+                    windowLastTimestamp: lastT
+                ))
             logTransitionIfNeeded(result: res, window: window)
             return res
         }
-
+        
         if config.requireRowTiming {
             let missing = window.frames.contains { $0.rowTiming == nil }
             if missing {
@@ -128,7 +149,7 @@ final class RSPnPBridgeV1 {
                 return res
             }
         }
-
+        
         if window.frames.contains(where: {
             !$0.ballCenter2D.x.isFinite ||
             !$0.ballCenter2D.y.isFinite ||
@@ -139,71 +160,84 @@ final class RSPnPBridgeV1 {
             logTransitionIfNeeded(result: res, window: window)
             return res
         }
-
+        
         logAttemptIfNeeded(window: window)
-
+        
         let result = solveV1(window: window)
-
+        
         lastProcessedWindowLastT = window.frames.last?.timestampSec
         logTransitionIfNeeded(result: result, window: window)
         return result
     }
-
+    
+    // MARK: - Minimal Solve (V1)
+    
     private func solveV1(window: RSWindowSnapshot) -> RSPnPOutcome {
-
+        
         // ------------------------------------------------------------
-        // Placeholder V1 implementation — always fails for now
+        // Placeholder V1 implementation — explicit failure
         // ------------------------------------------------------------
         let result: RSPnPOutcome = .failure(.notImplementedV1)
-
+        
         // ------------------------------------------------------------
         // Pose Stability Observation (NO POSE PATH)
         // ------------------------------------------------------------
-        // This is correct behavior: since no pose exists,
-        // explicitly tell the observer "no pose this frame".
         poseStability.observeNoPose(
             nowSec: window.snapshotTimeSec,
             reason: "not_implemented_v1"
         )
-
+        
         return result
     }
-
-    // MARK: - Logging (state transitions only)
-
+    
+    // MARK: - Logging Helpers
+    
     private func logAttemptIfNeeded(window: RSWindowSnapshot) {
         guard DebugProbe.isEnabled(.capture) else { return }
         if logState != .attempting {
             logState = .attempting
-            print("[RSPNP] solve attempted count=\(window.frameCount)")
+            print("[RSPNP] attempted frames=\(window.frameCount)")
         }
     }
-
-    private func logTransitionIfNeeded(result: RSPnPOutcome, window: RSWindowSnapshot) {
+    
+    private func logTransitionIfNeeded(
+        result: RSPnPOutcome,
+        window: RSWindowSnapshot
+    ) {
         guard DebugProbe.isEnabled(.capture) else { return }
-
+        
         switch result {
-        case .skipped(let s):
-            let key = s.logString
-            if logState != .idleSkip(key) {
-                logState = .idleSkip(key)
-                print("[RSPNP] \(s.logString)")
+            
+        case .skipped(let r):
+            if logState != .idleSkip(r.logString) {
+                logState = .idleSkip(r.logString)
+                print("[RSPNP] \(r.logString)")
             }
-
+            
         case .failure(let f):
-            let key = f.logString
-            if logState != .failure(key) {
-                logState = .failure(key)
-                print("[RSPNP] \(f.logString) count=\(window.frameCount)")
+            if logState != .failure(f.logString) {
+                logState = .failure(f.logString)
+                print("[RSPNP] \(f.logString)")
             }
-
-        case .success(let sol):
+            
+        case .success(_, let residual, let conditioning):
             if logState != .success {
                 logState = .success
-                print("[RSPNP] success residual=\(fmt(sol.residual)) frames=\(sol.frameCount)")
+                
+                // Existing summary log
+                print(
+                    "[RSPNP] success residual=\(String(format: "%.4f", residual)) " +
+                    "cond=\(String(format: "%.4f", conditioning))"
+                )
+                
+                // 🔍 NEW: explicit solver-boundary confirmation
+                print(
+                    "[DEBUG][RSPNP] solver success " +
+                    "frames=\(window.frameCount) " +
+                    "residual=\(String(format: "%.4f", residual)) " +
+                    "cond=\(String(format: "%.4f", conditioning))"
+                )
             }
         }
     }
-
-    private func fmt(_ v: Float) -> String { String(format: "%.2f", v) }
 }
