@@ -3,6 +3,7 @@
 //
 
 import UIKit
+import CoreMedia
 import CoreVideo
 import MetalKit
 
@@ -45,14 +46,14 @@ final class DotTestViewController: UIViewController {
 
 extension DotTestViewController: CameraFrameDelegate {
 
-    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer) {
+    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
 
         DebugProbe.probePixelBuffer(pixelBuffer)
         DebugProbe.probeYPlaneBytes(pixelBuffer, count: 16)
 
         let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
 
-        DotTestCoordinator.shared.processFrame(pixelBuffer)
+        DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
 
         previewView.updateOverlay(
             fullSize: DotTestCoordinator.shared.currentFullSize(),

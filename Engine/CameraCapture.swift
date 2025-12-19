@@ -228,8 +228,10 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             return
         }
 
+        let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
         Task { @MainActor in
-            self.delegate?.cameraDidOutput(pb)
+            self.delegate?.cameraDidOutput(pb, timestamp: ts)
         }
     }
 }

@@ -112,6 +112,7 @@ final class DotTestMode: ObservableObject {
     // -------------------------------------------------------------------------
 
     @Published var isArmedForDetection: Bool = false
+    @Published var founderTestModeEnabled: Bool = false
     @Published var warmupFrameCount: Int = 0
     let warmupFramesNeeded: Int = 5
 

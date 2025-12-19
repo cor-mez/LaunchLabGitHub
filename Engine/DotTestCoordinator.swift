@@ -3,9 +3,14 @@
 //
 
 import Foundation
+import CoreMedia
 import CoreVideo
 import CoreGraphics
 import Metal
+
+protocol FounderTelemetryObserver: AnyObject {
+    func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry)
+}
 
 @MainActor
 final class DotTestCoordinator {
@@ -32,9 +37,12 @@ final class DotTestCoordinator {
     weak var poseEligibilityDelegate: PoseEligibilityDelegate?
     
     // MARK: - Markerless Discrimination Gates (MDG)
-    private let mdg = MarkerlessDiscriminationGates()
+    private let mdgConfig = MarkerlessDiscriminationGates.Config()
+    private lazy var mdg = MarkerlessDiscriminationGates(config: mdgConfig)
     private var mdgBallLikeEvidence: Bool = false
     private var mdgRejectReason: String? = nil
+
+    weak var founderDelegate: FounderTelemetryObserver?
     
     private init() {}
     
@@ -124,9 +132,11 @@ final class DotTestCoordinator {
     
     // MARK: - Frame Entry (from DotTestViewController)
     // -------------------------------------------------------------------------
-    func processFrame(_ pb: CVPixelBuffer) {
-        
+    func processFrame(_ pb: CVPixelBuffer, timestamp: CMTime) {
+
         frameIndex += 1
+
+        let timestampSec = CMTimeGetSeconds(timestamp)
         
         // Always allow preview to render (handled elsewhere)
         // Throttle heavy detection deterministically
@@ -146,15 +156,15 @@ final class DotTestCoordinator {
         guard w > 32, h > 32 else { return }
         
         lastFull = CGSize(width: w, height: h)
-        
-        runDetection(on: pb)
+
+        runDetection(on: pb, timestampSec: timestampSec)
     }
     
     // -------------------------------------------------------------------------
     // MARK: - Core Detection Dispatch
     // -------------------------------------------------------------------------
     
-    private func runDetection(on pb: CVPixelBuffer) {
+    private func runDetection(on pb: CVPixelBuffer, timestampSec: Double) {
         
         let fullW  = CVPixelBufferGetWidth(pb)
         let fullH  = CVPixelBufferGetHeight(pb)
@@ -200,7 +210,8 @@ final class DotTestCoordinator {
                 pb: pb,
                 roi: roi,
                 sr: sr,
-                fullSize: fullSz
+                fullSize: fullSz,
+                timestampSec: timestampSec
             )
             
         case .gpuCb:
@@ -568,6 +579,29 @@ final class DotTestCoordinator {
     
     func currentROI() -> CGRect  { lastROI }
     func currentFullSize() -> CGSize { lastFull }
+
+    private func publishTelemetry(
+        roi: CGRect,
+        fullSize: CGSize,
+        ballLocked: Bool,
+        confidence: Float,
+        center: CGPoint?,
+        mdgDecision: MarkerlessDiscriminationGates.Decision?,
+        timestampSec: Double
+    ) {
+        let telemetry = FounderFrameTelemetry(
+            roi: roi,
+            fullSize: fullSize,
+            ballLocked: ballLocked,
+            confidence: confidence,
+            center: center,
+            mdgDecision: mdgDecision,
+            motionGatePxPerSec: mdgConfig.staticVelocityPxPerSec,
+            timestampSec: timestampSec
+        )
+
+        founderDelegate?.didUpdateFounderTelemetry(telemetry)
+    }
     
     
     // -----------------------------------------------------------------------------
@@ -579,8 +613,25 @@ final class DotTestCoordinator {
         pb: CVPixelBuffer,
         roi: CGRect,
         sr: Float,
-        fullSize: CGSize
+        fullSize: CGSize,
+        timestampSec: Double
     ) {
+        var telemetryCenter: CGPoint? = ballLockMemory?.lastCenter
+        var telemetryLocked: Bool = ballLockMemory != nil
+        var telemetryConfidence: Float = smoothedBallLockCount
+        var telemetryDecision: MarkerlessDiscriminationGates.Decision? = nil
+
+        defer {
+            publishTelemetry(
+                roi: roi,
+                fullSize: fullSize,
+                ballLocked: telemetryLocked,
+                confidence: telemetryConfidence,
+                center: telemetryCenter,
+                mdgDecision: telemetryDecision,
+                timestampSec: timestampSec
+            )
+        }
         // ---------------------------------------------------------------------
         // 1. Configure detector thresholds
         // ---------------------------------------------------------------------
@@ -669,7 +720,12 @@ final class DotTestCoordinator {
         if effectiveDensityCount < densityFloor {
             ballLockMemory = nil
             lastBallLockCount = 0
-            
+
+            telemetryLocked = false
+            telemetryConfidence = 0
+            telemetryCenter = nil
+            telemetryDecision = nil
+
             if DebugProbe.isEnabled(.capture) {
                 print("[BALLLOCK] reset (density collapse)")
             }
@@ -699,6 +755,11 @@ final class DotTestCoordinator {
                 ballLockHoldFrames = 0
                 ballLockMemory = nil
                 lastBallLockCount = 0
+
+                telemetryLocked = false
+                telemetryConfidence = 0
+                telemetryCenter = nil
+                telemetryDecision = nil
 
                 if DebugProbe.isEnabled(.capture) {
                     print("[BALLLOCK] reset (density collapse)")
@@ -741,11 +802,16 @@ final class DotTestCoordinator {
                 points: finalBallLockPoints,
                 candidateCenter: cluster.center,
                 candidateRadiusPx: cluster.radius,
-                timestampSec: Double(frameIndex)
+                timestampSec: timestampSec
             )
 
             mdgBallLikeEvidence = mdgDecision.ballLikeEvidence
             mdgRejectReason = mdgDecision.reason
+
+            telemetryLocked = true
+            telemetryCenter = cluster.center
+            telemetryConfidence = smoothedBallLockCount
+            telemetryDecision = mdgDecision
 
             if mdgBallLikeEvidence {
                 // 🔔 Signal pose eligibility ONLY
@@ -778,6 +844,11 @@ final class DotTestCoordinator {
                 lastBallLockCount = 0
                 mdgBallLikeEvidence = false
                 mdgRejectReason = "balllock_reset"
+
+                telemetryLocked = false
+                telemetryConfidence = 0
+                telemetryCenter = nil
+                telemetryDecision = nil
                 if DebugProbe.isEnabled(.capture) {
                     print("[BALLLOCK] reset (density collapse)")
                 }
@@ -808,6 +879,10 @@ final class DotTestCoordinator {
                         lastRadius: cluster.radius,
                         age: 0
                     )
+
+                    telemetryLocked = true
+                    telemetryCenter = cluster.center
+                    telemetryConfidence = Float(cluster.count)
 
                     if DebugProbe.isEnabled(.capture) {
                         if wasLocked {
