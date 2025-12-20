@@ -130,7 +130,6 @@ final class FounderSessionManager {
             if armed {
                 let refusal = makeRefusal(reason: telemetry.mdgDecision?.reason ?? "unlock_before_motion")
                 store(refusal)
-                disarm()
                 return refusal
             }
             return nil
@@ -198,6 +197,7 @@ final class FounderSessionManager {
 
     private func makeRefusal(reason: String) -> ShotRecord {
         let stability = ssi.push(speed: nil, angle: nil, direction: nil, confidence: 0)
+        disarm()
         let record = ShotRecord(
             id: nextId,
             timestamp: Date(),
