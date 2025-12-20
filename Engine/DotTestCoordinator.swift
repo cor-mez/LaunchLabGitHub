@@ -227,7 +227,8 @@ final class DotTestCoordinator {
                 pb: pb,
                 roi: roi,
                 sr: sr,
-                fullSize: fullSz
+                fullSize: fullSz,
+                timestampSec: timestampSec
             )
         }
     }
