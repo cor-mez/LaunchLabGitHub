@@ -78,6 +78,8 @@ final class ShotSummaryView: UIView {
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
         ])
+
+        update(with: nil)
     }
 
     private static func makeTitle(_ text: String) -> UILabel {
@@ -108,8 +110,8 @@ final class ShotSummaryView: UIView {
         return row
     }
 
-    func update(with shot: ShotRecord?) {
-        guard let shot = shot, let measured = shot.measured else {
+    func update(with summary: ShotSummary?) {
+        guard let summary = summary else {
             speedLabel.text = "—"
             angleLabel.text = "—"
             directionLabel.text = "—"
@@ -118,18 +120,29 @@ final class ShotSummaryView: UIView {
             carryLabel.text = "—"
             apexLabel.text = "—"
             dispersionLabel.text = "—"
+            spinCopyLabel.text = "Spin not reported — insufficient observability."
             return
         }
 
-        speedLabel.text = measured.ballSpeedPxPerSec.map { String(format: "%.1f px/s", $0) } ?? "—"
-        angleLabel.text = measured.launchAngleDeg.map { String(format: "%.1f°", $0) } ?? "—"
-        directionLabel.text = measured.launchDirectionDeg.map { String(format: "%.1f°", $0) } ?? "—"
-        ssiLabel.text = "\(measured.stabilityIndex)"
-        impactLabel.text = measured.impact.rawValue
+        if let speed = summary.ballSpeed {
+            speedLabel.text = String(format: "%.1f mph", speed)
+        } else {
+            speedLabel.text = "—"
+        }
+        angleLabel.text = summary.launchAngle.map { String(format: "%.1f°", $0) } ?? "—"
+        directionLabel.text = summary.direction.map { String(format: "%.1f°", $0) } ?? "—"
+        ssiLabel.text = "\(summary.shotStabilityIndex)"
+        impactLabel.text = summary.impactDetected ? "Detected" : "—"
 
-        carryLabel.text = shot.estimated?.carryDistance.map { String(format: "%.1f", $0) } ?? "not estimated"
-        apexLabel.text = shot.estimated?.apexHeight.map { String(format: "%.1f", $0) } ?? "not estimated"
-        dispersionLabel.text = shot.estimated?.dispersion.map { String(format: "%.1f", $0) } ?? "not estimated"
+        carryLabel.text = summary.carryDistanceYards.map { String(format: "%.1f yd", $0) } ?? "not estimated"
+        apexLabel.text = summary.apexHeightYards.map { String(format: "%.1f yd", $0) } ?? "not estimated"
+        dispersionLabel.text = summary.dispersionYards.map { String(format: "%.1f yd", $0) } ?? "not estimated"
+
+        if let refusal = summary.refusalReason {
+            spinCopyLabel.text = refusal
+        } else {
+            spinCopyLabel.text = "Spin not reported — insufficient observability."
+        }
     }
 }
 
@@ -174,18 +187,18 @@ final class SessionHistoryView: UIView {
         ])
     }
 
-    func update(with history: [ShotRecord]) {
+    func update(with history: [ShotRecord], summaries: [ShotSummary]) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-        for shot in history.reversed() { // newest first
-            let row = ShotHistoryRow(shot: shot)
+        for (shot, summary) in zip(history.reversed(), summaries.reversed()) { // newest first
+            let row = ShotHistoryRow(shot: shot, summary: summary)
             stack.addArrangedSubview(row)
         }
     }
 }
 
 final class ShotHistoryRow: UIView {
-    init(shot: ShotRecord) {
+    init(shot: ShotRecord, summary: ShotSummary) {
         super.init(frame: .zero)
         let title = UILabel()
         title.textColor = .white
@@ -195,26 +208,22 @@ final class ShotHistoryRow: UIView {
         let speedLabel = UILabel()
         speedLabel.textColor = .white
         speedLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        if let speed = shot.measured?.ballSpeedPxPerSec {
-            speedLabel.text = String(format: "%.1f px/s", speed)
-        } else {
-            speedLabel.text = "—"
-        }
+        speedLabel.text = summary.ballSpeed.map { String(format: "%.1f mph", $0) } ?? "—"
 
         let angleLabel = UILabel()
         angleLabel.textColor = .white
         angleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        angleLabel.text = shot.measured?.launchAngleDeg.map { String(format: "%.1f°", $0) } ?? "—"
+        angleLabel.text = summary.launchAngle.map { String(format: "%.1f°", $0) } ?? "—"
 
         let dirLabel = UILabel()
         dirLabel.textColor = .white
         dirLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        dirLabel.text = shot.measured?.launchDirectionDeg.map { String(format: "%.1f°", $0) } ?? "—"
+        dirLabel.text = summary.direction.map { String(format: "%.1f°", $0) } ?? "—"
 
         let ssiLabel = UILabel()
         ssiLabel.textColor = .white
         ssiLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        ssiLabel.text = shot.measured?.stabilityIndex.description ?? "—"
+        ssiLabel.text = summary.shotStabilityIndex.description
 
         let statusLabel = UILabel()
         statusLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
@@ -230,7 +239,7 @@ final class ShotHistoryRow: UIView {
             statusLabel.text = "Refused"
         }
 
-        let stability = shot.measured?.stabilityIndex ?? 0
+        let stability = summary.shotStabilityIndex
         if shot.status == .refused {
             backgroundColor = UIColor.systemRed.withAlphaComponent(0.3)
         } else if stability >= 70 {
@@ -239,6 +248,39 @@ final class ShotHistoryRow: UIView {
             backgroundColor = UIColor.systemYellow.withAlphaComponent(0.3)
         } else {
             backgroundColor = UIColor.systemRed.withAlphaComponent(0.3)
+        }
+
+        if shot.status == .refused {
+            let reason = summary.refusalReason ?? "Refused"
+            statusLabel.text = "Refused"
+            speedLabel.text = "—"
+            angleLabel.text = "—"
+            dirLabel.text = "—"
+            ssiLabel.text = summary.shotStabilityIndex.description
+            title.text = "#\(shot.id) — Refused"
+
+            let refusalLabel = UILabel()
+            refusalLabel.text = "(Spin: \(reason))"
+            refusalLabel.textColor = .white
+            refusalLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            refusalLabel.textAlignment = .left
+
+            let infoRow = UIStackView(arrangedSubviews: [title, refusalLabel])
+            infoRow.axis = .horizontal
+            infoRow.distribution = .equalSpacing
+            infoRow.translatesAutoresizingMaskIntoConstraints = false
+
+            addSubview(infoRow)
+            NSLayoutConstraint.activate([
+                infoRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                infoRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                infoRow.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+                infoRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6)
+            ])
+
+            layer.cornerRadius = 8
+            clipsToBounds = true
+            return
         }
 
         let row = UIStackView(arrangedSubviews: [title, speedLabel, angleLabel, dirLabel, ssiLabel, statusLabel])

@@ -10,6 +10,11 @@ import Metal
 
 protocol FounderTelemetryObserver: AnyObject {
     func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry)
+    func didCompleteShot(_ summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary])
+}
+
+extension FounderTelemetryObserver {
+    func didCompleteShot(_ summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary]) {}
 }
 
 @MainActor
@@ -43,6 +48,13 @@ final class DotTestCoordinator {
     private var mdgRejectReason: String? = nil
 
     weak var founderDelegate: FounderTelemetryObserver?
+
+    private let sessionManager = FounderSessionManager()
+    private(set) var lastShotSummary: ShotSummary?
+    private var shotSummariesStore: [ShotSummary] = []
+
+    var sessionHistory: [ShotRecord] { sessionManager.history }
+    var shotSummaries: [ShotSummary] { shotSummariesStore }
     
     private init() {}
     
@@ -598,10 +610,44 @@ final class DotTestCoordinator {
             center: center,
             mdgDecision: mdgDecision,
             motionGatePxPerSec: mdgConfig.staticVelocityPxPerSec,
-            timestampSec: timestampSec
+            timestampSec: timestampSec,
+            sceneScale: currentSceneScale(fullSize: fullSize)
         )
 
         founderDelegate?.didUpdateFounderTelemetry(telemetry)
+        if let shot = sessionManager.handleFrame(telemetry) {
+            let summary = makeShotSummary(from: shot, sceneScale: telemetry.sceneScale)
+            lastShotSummary = summary
+            shotSummariesStore.append(summary)
+            if shotSummariesStore.count > sessionManager.history.count {
+                shotSummariesStore.removeFirst(shotSummariesStore.count - sessionManager.history.count)
+            }
+            founderDelegate?.didCompleteShot(summary, history: sessionManager.history, summaries: shotSummariesStore)
+        }
+    }
+
+    private func currentSceneScale(fullSize: CGSize) -> SceneScale {
+        let dominant = max(fullSize.width, fullSize.height)
+        return SceneScale(pixelsPerMeter: max(Double(dominant), 1))
+    }
+
+    private func makeShotSummary(from shot: ShotRecord, sceneScale: SceneScale) -> ShotSummary {
+        let speedMph = shot.measured?.ballSpeedPxPerSec.map { UnitConverter.pxPerSecToMPH($0, scale: sceneScale) }
+        let carry = shot.estimated?.carryDistance.map { UnitConverter.metersToYards($0) }
+        let apex = shot.estimated?.apexHeight.map { UnitConverter.metersToYards($0) }
+        let dispersion = shot.estimated?.dispersion.map { UnitConverter.metersToYards($0) }
+
+        return ShotSummary(
+            ballSpeed: speedMph,
+            launchAngle: shot.measured?.launchAngleDeg,
+            direction: shot.measured?.launchDirectionDeg,
+            shotStabilityIndex: shot.measured?.stabilityIndex ?? 0,
+            impactDetected: shot.measured != nil,
+            refusalReason: shot.status == .refused ? shot.refusalReasons.first : nil,
+            carryDistanceYards: carry,
+            apexHeightYards: apex,
+            dispersionYards: dispersion
+        )
     }
     
     

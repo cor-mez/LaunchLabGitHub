@@ -6,9 +6,10 @@ import MetalKit
 final class FounderExperienceViewController: UIViewController {
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
-    private let sessionManager = FounderSessionManager()
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
+
+    var presentationMode: FounderPresentationMode = .shotSummary
 
     private let instructionLabel: UILabel = {
         let l = UILabel()
@@ -67,9 +68,10 @@ final class FounderExperienceViewController: UIViewController {
         summaryView.heightAnchor.constraint(equalTo: historyView.heightAnchor, multiplier: 0.8).isActive = true
     }
 
-    private func handleShotUpdate(_ shot: ShotRecord?) {
-        summaryView.update(with: shot)
-        historyView.update(with: sessionManager.history)
+    private func handleShotUpdate(summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary]) {
+        guard presentationMode == .shotSummary else { return }
+        summaryView.update(with: summary)
+        historyView.update(with: history, summaries: summaries)
     }
 }
 
@@ -93,9 +95,13 @@ extension FounderExperienceViewController: FounderTelemetryObserver {
             ballLocked: telemetry.ballLocked,
             confidence: telemetry.confidence
         )
-
-        if let shot = sessionManager.handleFrame(telemetry) {
-            handleShotUpdate(shot)
+        if presentationMode == .frameDebug, let summary = DotTestCoordinator.shared.lastShotSummary {
+            historyView.update(with: DotTestCoordinator.shared.sessionHistory,
+                               summaries: DotTestCoordinator.shared.shotSummaries)
+            summaryView.update(with: summary)
         }
+    }
+    func didCompleteShot(_ summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary]) {
+        handleShotUpdate(summary: summary, history: history, summaries: summaries)
     }
 }

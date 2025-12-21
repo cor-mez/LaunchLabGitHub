@@ -10,6 +10,40 @@ struct FounderFrameTelemetry {
     let mdgDecision: MarkerlessDiscriminationGates.Decision?
     let motionGatePxPerSec: Double
     let timestampSec: Double
+    let sceneScale: SceneScale
+}
+
+enum FounderPresentationMode {
+    case frameDebug
+    case shotSummary
+}
+
+struct SceneScale {
+    let pixelsPerMeter: Double
+}
+
+struct ShotSummary {
+    let ballSpeed: Double?
+    let launchAngle: Double?
+    let direction: Double?
+    let shotStabilityIndex: Int
+    let impactDetected: Bool
+    let refusalReason: String?
+
+    let carryDistanceYards: Double?
+    let apexHeightYards: Double?
+    let dispersionYards: Double?
+}
+
+struct UnitConverter {
+    static func pxPerSecToMPH(_ pxPerSec: Double, scale: SceneScale) -> Double {
+        let metersPerSec = pxPerSec / scale.pixelsPerMeter
+        return metersPerSec * 2.23694
+    }
+
+    static func metersToYards(_ meters: Double) -> Double {
+        return meters * 1.09361
+    }
 }
 
 enum ImpactClassification: String {
