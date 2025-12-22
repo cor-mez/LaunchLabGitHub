@@ -1,85 +1,5 @@
 import UIKit
 
-struct ShotDisplayFormatter {
-    var pixelsPerMeter: Double? = nil
-
-    private func convertSpeedToMph(_ pxPerSec: Double) -> Double? {
-        guard let pixelsPerMeter else { return nil }
-        let metersPerSec = pxPerSec / pixelsPerMeter
-        return metersPerSec * 2.23693629
-    }
-
-    private func convertDistanceToYards(_ distancePx: Double) -> Double? {
-        guard let pixelsPerMeter else { return nil }
-        let meters = distancePx / pixelsPerMeter
-        return meters * 1.0936133
-    }
-
-    func speedText(from measured: ShotMeasuredData?) -> String {
-        guard let measured else { return "Refused" }
-        guard let pxSpeed = measured.ballSpeedPxPerSec else { return "Refused" }
-
-        if let mph = convertSpeedToMph(pxSpeed) {
-            return String(format: "Measured: %.1f mph (%.1f px/s)", mph, pxSpeed)
-        } else {
-            return String(format: "Refused (%.1f px/s, no calibration)", pxSpeed)
-        }
-    }
-
-    func launchAngleText(from measured: ShotMeasuredData?) -> String {
-        guard let measured else { return "Refused" }
-        return measured.launchAngleDeg.map { String(format: "Measured: %.1f°", $0) } ?? "Refused"
-    }
-
-    func directionText(from measured: ShotMeasuredData?) -> String {
-        guard let measured else { return "Refused" }
-        return measured.launchDirectionDeg.map { String(format: "Measured: %.1f°", $0) } ?? "Refused"
-    }
-
-    func stabilityText(from measured: ShotMeasuredData?) -> String {
-        guard let measured else { return "Refused" }
-        return "Measured: \(measured.stabilityIndex)"
-    }
-
-    func impactText(from measured: ShotMeasuredData?) -> String {
-        guard let measured else { return "Refused" }
-        return "Measured: \(measured.impact.rawValue)"
-    }
-
-    func carryText(from estimated: ShotEstimatedData?) -> String {
-        guard let estimated else { return "Refused" }
-        guard let carryPx = estimated.carryDistance else { return "Refused" }
-
-        if let yards = convertDistanceToYards(carryPx) {
-            return String(format: "Estimated: %.1f yd (%.1f px)", yards, carryPx)
-        } else {
-            return String(format: "Refused (%.1f px, no calibration)", carryPx)
-        }
-    }
-
-    func apexText(from estimated: ShotEstimatedData?) -> String {
-        guard let estimated else { return "Refused" }
-        guard let apexPx = estimated.apexHeight else { return "Refused" }
-
-        if let yards = convertDistanceToYards(apexPx) {
-            return String(format: "Estimated: %.1f yd (%.1f px)", yards, apexPx)
-        } else {
-            return String(format: "Refused (%.1f px, no calibration)", apexPx)
-        }
-    }
-
-    func dispersionText(from estimated: ShotEstimatedData?) -> String {
-        guard let estimated else { return "Refused" }
-        guard let dispersionPx = estimated.dispersion else { return "Refused" }
-
-        if let yards = convertDistanceToYards(dispersionPx) {
-            return String(format: "Estimated: %.1f yd (%.1f px)", yards, dispersionPx)
-        } else {
-            return String(format: "Refused (%.1f px, no calibration)", dispersionPx)
-        }
-    }
-}
-
 final class ShotSummaryView: UIView {
     private let measuredTitle = ShotSummaryView.makeTitle("MEASURED")
     private let estimatedTitle = ShotSummaryView.makeTitle("ESTIMATED")
@@ -188,28 +108,28 @@ final class ShotSummaryView: UIView {
         return row
     }
 
-    func update(with shot: ShotRecord?, formatter: ShotDisplayFormatter) {
-        guard let shot else {
-            speedLabel.text = "Refused"
-            angleLabel.text = "Refused"
-            directionLabel.text = "Refused"
-            ssiLabel.text = "Refused"
-            impactLabel.text = "Refused"
-            carryLabel.text = "Refused"
-            apexLabel.text = "Refused"
-            dispersionLabel.text = "Refused"
+    func update(with shot: ShotRecord?) {
+        guard let shot = shot, let measured = shot.measured else {
+            speedLabel.text = "—"
+            angleLabel.text = "—"
+            directionLabel.text = "—"
+            ssiLabel.text = "—"
+            impactLabel.text = "—"
+            carryLabel.text = "—"
+            apexLabel.text = "—"
+            dispersionLabel.text = "—"
             return
         }
 
-        speedLabel.text = formatter.speedText(from: shot.measured)
-        angleLabel.text = formatter.launchAngleText(from: shot.measured)
-        directionLabel.text = formatter.directionText(from: shot.measured)
-        ssiLabel.text = formatter.stabilityText(from: shot.measured)
-        impactLabel.text = formatter.impactText(from: shot.measured)
+        speedLabel.text = measured.ballSpeedPxPerSec.map { String(format: "%.1f px/s", $0) } ?? "—"
+        angleLabel.text = measured.launchAngleDeg.map { String(format: "%.1f°", $0) } ?? "—"
+        directionLabel.text = measured.launchDirectionDeg.map { String(format: "%.1f°", $0) } ?? "—"
+        ssiLabel.text = "\(measured.stabilityIndex)"
+        impactLabel.text = measured.impact.rawValue
 
-        carryLabel.text = formatter.carryText(from: shot.estimated)
-        apexLabel.text = formatter.apexText(from: shot.estimated)
-        dispersionLabel.text = formatter.dispersionText(from: shot.estimated)
+        carryLabel.text = shot.estimated?.carryDistance.map { String(format: "%.1f", $0) } ?? "not estimated"
+        apexLabel.text = shot.estimated?.apexHeight.map { String(format: "%.1f", $0) } ?? "not estimated"
+        dispersionLabel.text = shot.estimated?.dispersion.map { String(format: "%.1f", $0) } ?? "not estimated"
     }
 }
 
@@ -254,18 +174,18 @@ final class SessionHistoryView: UIView {
         ])
     }
 
-    func update(with history: [ShotRecord], formatter: ShotDisplayFormatter) {
+    func update(with history: [ShotRecord]) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         for shot in history.reversed() { // newest first
-            let row = ShotHistoryRow(shot: shot, formatter: formatter)
+            let row = ShotHistoryRow(shot: shot)
             stack.addArrangedSubview(row)
         }
     }
 }
 
 final class ShotHistoryRow: UIView {
-    init(shot: ShotRecord, formatter: ShotDisplayFormatter) {
+    init(shot: ShotRecord) {
         super.init(frame: .zero)
         let title = UILabel()
         title.textColor = .white
@@ -275,22 +195,26 @@ final class ShotHistoryRow: UIView {
         let speedLabel = UILabel()
         speedLabel.textColor = .white
         speedLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        speedLabel.text = formatter.speedText(from: shot.measured)
+        if let speed = shot.measured?.ballSpeedPxPerSec {
+            speedLabel.text = String(format: "%.1f px/s", speed)
+        } else {
+            speedLabel.text = "—"
+        }
 
         let angleLabel = UILabel()
         angleLabel.textColor = .white
         angleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        angleLabel.text = formatter.launchAngleText(from: shot.measured)
+        angleLabel.text = shot.measured?.launchAngleDeg.map { String(format: "%.1f°", $0) } ?? "—"
 
         let dirLabel = UILabel()
         dirLabel.textColor = .white
         dirLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        dirLabel.text = formatter.directionText(from: shot.measured)
+        dirLabel.text = shot.measured?.launchDirectionDeg.map { String(format: "%.1f°", $0) } ?? "—"
 
         let ssiLabel = UILabel()
         ssiLabel.textColor = .white
         ssiLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        ssiLabel.text = formatter.stabilityText(from: shot.measured)
+        ssiLabel.text = shot.measured?.stabilityIndex.description ?? "—"
 
         let statusLabel = UILabel()
         statusLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
