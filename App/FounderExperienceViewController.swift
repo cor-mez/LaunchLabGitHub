@@ -4,11 +4,23 @@ import MetalKit
 
 @MainActor
 final class FounderExperienceViewController: UIViewController {
+    private enum ShotLifecycleState: String {
+        case idle = "Idle"
+        case armed = "Armed"
+        case shotCaptured = "Shot Captured"
+        case summary = "Summary"
+    }
+
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
     private let sessionManager = FounderSessionManager()
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
+
+    private var lifecycleState: ShotLifecycleState = .idle {
+        didSet { updateLifecycleBadge() }
+    }
+    private var pendingShot: ShotRecord?
 
     private let instructionLabel: UILabel = {
         let l = UILabel()
@@ -17,6 +29,19 @@ final class FounderExperienceViewController: UIViewController {
         l.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold)
         l.textAlignment = .center
         l.numberOfLines = 2
+        return l
+    }()
+
+    private let lifecycleBadge: UILabel = {
+        let l = UILabel()
+        l.textColor = .black
+        l.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .bold)
+        l.textAlignment = .center
+        l.backgroundColor = .systemYellow
+        l.layer.cornerRadius = 8
+        l.layer.masksToBounds = true
+        l.text = "Idle"
+        l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }()
 
@@ -51,6 +76,7 @@ final class FounderExperienceViewController: UIViewController {
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(instructionLabel)
+        view.addSubview(lifecycleBadge)
         view.addSubview(mainStack)
 
         NSLayoutConstraint.activate([
@@ -58,7 +84,12 @@ final class FounderExperienceViewController: UIViewController {
             instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
 
-            mainStack.topAnchor.constraint(equalTo: instructionLabel.bottomAnchor, constant: 8),
+            lifecycleBadge.topAnchor.constraint(equalTo: instructionLabel.bottomAnchor, constant: 8),
+            lifecycleBadge.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            lifecycleBadge.heightAnchor.constraint(equalToConstant: 28),
+            lifecycleBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+
+            mainStack.topAnchor.constraint(equalTo: lifecycleBadge.bottomAnchor, constant: 8),
             mainStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             mainStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             mainStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
@@ -94,8 +125,47 @@ extension FounderExperienceViewController: FounderTelemetryObserver {
             confidence: telemetry.confidence
         )
 
+        updateLifecycle(from: telemetry)
+
         if let shot = sessionManager.handleFrame(telemetry) {
+            pendingShot = shot
+            lifecycleState = .shotCaptured
             handleShotUpdate(shot)
+            lifecycleState = .summary
+        }
+    }
+}
+
+// MARK: - Shot lifecycle state handling
+
+private extension FounderExperienceViewController {
+    func updateLifecycle(from telemetry: FounderFrameTelemetry) {
+        if telemetry.ballLocked {
+            if lifecycleState == .idle {
+                lifecycleState = .armed
+            }
+        } else if pendingShot == nil {
+            lifecycleState = .idle
+        }
+    }
+
+    func updateLifecycleBadge() {
+        lifecycleBadge.text = lifecycleState.rawValue
+
+        switch lifecycleState {
+        case .idle:
+            lifecycleBadge.backgroundColor = .systemGray4
+            lifecycleBadge.textColor = .black
+        case .armed:
+            lifecycleBadge.backgroundColor = .systemYellow
+            lifecycleBadge.textColor = .black
+        case .shotCaptured:
+            lifecycleBadge.backgroundColor = .systemGreen
+            lifecycleBadge.textColor = .black
+        case .summary:
+            lifecycleBadge.backgroundColor = .systemBlue
+            lifecycleBadge.textColor = .white
+            pendingShot = nil
         }
     }
 }
