@@ -14,6 +14,7 @@ final class FounderExperienceViewController: UIViewController {
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
     private let sessionManager = FounderSessionManager()
+    private let displayFormatter = ShotDisplayFormatter()
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
 
@@ -99,8 +100,8 @@ final class FounderExperienceViewController: UIViewController {
     }
 
     private func handleShotUpdate(_ shot: ShotRecord?) {
-        summaryView.update(with: shot)
-        historyView.update(with: sessionManager.history)
+        summaryView.update(with: shot, formatter: displayFormatter)
+        historyView.update(with: sessionManager.history, formatter: displayFormatter)
     }
 }
 
