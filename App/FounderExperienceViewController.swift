@@ -7,6 +7,7 @@ final class FounderExperienceViewController: UIViewController {
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
     private let sessionManager = FounderSessionManager()
+    private let lifecycleView = ShotLifecycleView()
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
 
@@ -39,7 +40,7 @@ final class FounderExperienceViewController: UIViewController {
         historyView.translatesAutoresizingMaskIntoConstraints = false
         instructionLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let panelStack = UIStackView(arrangedSubviews: [summaryView, historyView])
+        let panelStack = UIStackView(arrangedSubviews: [lifecycleView, summaryView, historyView])
         panelStack.axis = .vertical
         panelStack.spacing = 12
 
@@ -64,12 +65,14 @@ final class FounderExperienceViewController: UIViewController {
             mainStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
         ])
 
+        lifecycleView.heightAnchor.constraint(equalToConstant: 90).isActive = true
         summaryView.heightAnchor.constraint(equalTo: historyView.heightAnchor, multiplier: 0.8).isActive = true
     }
 
     private func handleShotUpdate(_ shot: ShotRecord?) {
         summaryView.update(with: shot)
         historyView.update(with: sessionManager.history)
+        if let shot { lifecycleView.update(state: .summary(shot)) }
     }
 }
 
@@ -94,7 +97,10 @@ extension FounderExperienceViewController: FounderTelemetryObserver {
             confidence: telemetry.confidence
         )
 
-        if let shot = sessionManager.handleFrame(telemetry) {
+        let event = sessionManager.handleFrame(telemetry)
+        lifecycleView.update(state: event.lifecycle)
+
+        if let shot = event.shot {
             handleShotUpdate(shot)
         }
     }

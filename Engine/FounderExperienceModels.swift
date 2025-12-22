@@ -26,6 +26,8 @@ struct ShotMeasuredData {
     let launchDirectionDeg: Double?
     let stabilityIndex: Int
     let impact: ImpactClassification
+    let pixelDisplacement: Double?
+    let frameIntervalSec: Double?
 }
 
 struct ShotEstimatedData {
@@ -47,6 +49,56 @@ struct ShotRecord {
     let estimated: ShotEstimatedData?
     let status: ShotStatus
     let refusalReasons: [String]
+}
+
+enum ShotLifecycleState: Equatable {
+    case idle
+    case armed(confidence: Float)
+    case captured(ShotRecord)
+    case summary(ShotRecord)
+
+    static func == (lhs: ShotLifecycleState, rhs: ShotLifecycleState) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle): return true
+        case let (.armed(a), .armed(b)): return a == b
+        case let (.captured(a), .captured(b)): return a.id == b.id
+        case let (.summary(a), .summary(b)): return a.id == b.id
+        default: return false
+        }
+    }
+}
+
+struct ShotEvent {
+    let shot: ShotRecord?
+    let lifecycle: ShotLifecycleState
+}
+
+enum FounderUnitTranslationError: String {
+    case missingCalibration = "Calibration required for unit translation"
+    case missingSample = "Insufficient motion sample"
+}
+
+enum FounderUnits {
+    /// Optional pixels-per-meter scale injected by calibration. When absent, UI will refuse conversion.
+    static var pixelsPerMeter: Double?
+
+    static func mph(fromPxPerSec px: Double?) -> Result<Double, FounderUnitTranslationError> {
+        guard let px else { return .failure(.missingSample) }
+        guard let pxPerMeter = pixelsPerMeter, pxPerMeter > 0 else { return .failure(.missingCalibration) }
+
+        let metersPerSecond = px / pxPerMeter
+        let mph = metersPerSecond * 2.23694
+        return .success(mph)
+    }
+
+    static func yards(fromPixels px: Double?) -> Result<Double, FounderUnitTranslationError> {
+        guard let px else { return .failure(.missingSample) }
+        guard let pxPerMeter = pixelsPerMeter, pxPerMeter > 0 else { return .failure(.missingCalibration) }
+
+        let meters = px / pxPerMeter
+        let yards = meters * 1.09361
+        return .success(yards)
+    }
 }
 
 final class ShotStabilityIndexCalculator {
@@ -111,9 +163,12 @@ final class FounderSessionManager {
     private var lastLockedCenter: CGPoint?
     private var lastTimestamp: Double?
     private var armed = false
+    private var lifecycleState: ShotLifecycleState = .idle
 
     private(set) var latestShot: ShotRecord?
     private(set) var history: [ShotRecord] = []
+
+    var lifecycle: ShotLifecycleState { lifecycleState }
 
     func reset() {
         history.removeAll()
@@ -121,24 +176,28 @@ final class FounderSessionManager {
         armed = false
         lastLockedCenter = nil
         lastTimestamp = nil
+        lifecycleState = .idle
     }
 
-    func handleFrame(_ telemetry: FounderFrameTelemetry) -> ShotRecord? {
+    func handleFrame(_ telemetry: FounderFrameTelemetry) -> ShotEvent {
         defer { updateLiveState(telemetry) }
+
+        updateLifecycleState(with: telemetry)
 
         guard telemetry.ballLocked else {
             if armed {
                 let refusal = makeRefusal(reason: telemetry.mdgDecision?.reason ?? "unlock_before_motion")
                 store(refusal)
-                return refusal
+                lifecycleState = .summary(refusal)
+                return ShotEvent(shot: refusal, lifecycle: lifecycleState)
             }
-            return nil
+            return ShotEvent(shot: nil, lifecycle: lifecycleState)
         }
 
         armed = true
 
         guard let center = telemetry.center else {
-            return nil
+            return ShotEvent(shot: nil, lifecycle: lifecycleState)
         }
 
         if let previous = lastLockedCenter, let lastTs = lastTimestamp {
@@ -166,7 +225,9 @@ final class FounderSessionManager {
                         launchAngleDeg: launchAngle,
                         launchDirectionDeg: direction,
                         stabilityIndex: stability,
-                        impact: .unknown
+                        impact: .unknown,
+                        pixelDisplacement: hypot(dx, dy),
+                        frameIntervalSec: dt
                     ),
                     estimated: ShotEstimatedData(
                         carryDistance: nil,
@@ -178,15 +239,17 @@ final class FounderSessionManager {
                 )
 
                 nextId += 1
+                let capturedEvent = ShotEvent(shot: record, lifecycle: .captured(record))
                 store(record)
                 armed = false
-                return record
+                lifecycleState = .summary(record)
+                return capturedEvent
             }
         }
 
         lastLockedCenter = center
         lastTimestamp = telemetry.timestampSec
-        return nil
+        return ShotEvent(shot: nil, lifecycle: lifecycleState)
     }
 
     private func disarm() {
@@ -221,6 +284,16 @@ final class FounderSessionManager {
         if !telemetry.ballLocked {
             lastLockedCenter = nil
             lastTimestamp = nil
+        }
+    }
+
+    private func updateLifecycleState(with telemetry: FounderFrameTelemetry) {
+        if telemetry.ballLocked {
+            lifecycleState = .armed(confidence: telemetry.confidence)
+        } else if case .summary = lifecycleState {
+            // Preserve summary state until a new armed cycle begins
+        } else {
+            lifecycleState = .idle
         }
     }
 
