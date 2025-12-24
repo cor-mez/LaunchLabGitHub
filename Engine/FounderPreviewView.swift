@@ -3,8 +3,9 @@ import UIKit
 
 @MainActor
 final class FounderPreviewView: MTKView {
+
     private var currentTexture: MTLTexture?
-    private var currentIsR8 = false
+    private var currentIsR8: Bool = false
     private let overlayLayer = FounderOverlayLayer()
 
     override init(frame: CGRect, device: MTLDevice?) {
@@ -35,23 +36,38 @@ final class FounderPreviewView: MTKView {
         overlayLayer.frame = bounds
     }
 
-    func render(texture: MTLTexture?, isR8: Bool) {
-        currentTexture = texture
-        currentIsR8 = isR8
+    // CALLED BY VIEW CONTROLLER ONLY
+    func render(texture: MTLTexture?, isR8: Bool, forceSolidColor: Bool) {
+        self.currentTexture = texture
+        self.currentIsR8 = isR8
     }
 
-    func updateOverlay(roi: CGRect, fullSize: CGSize, ballLocked: Bool, confidence: Float) {
-        overlayLayer.update(roi: roi, fullSize: fullSize, ballLocked: ballLocked, confidence: confidence)
+    func updateOverlay(
+        roi: CGRect,
+        fullSize: CGSize,
+        ballLocked: Bool,
+        confidence: Float
+    ) {
+        overlayLayer.update(
+            roi: roi,
+            fullSize: fullSize,
+            ballLocked: ballLocked,
+            confidence: confidence
+        )
     }
 }
 
 extension FounderPreviewView: MTKViewDelegate {
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        guard DotTestMode.shared.previewEnabled else { return }
+        guard let tex = currentTexture else { return }
+
         MetalRenderer.shared.renderPreview(
-            texture: currentTexture,
-            in: self,
+            texture: tex,
+            in: view,
             isR8: currentIsR8,
             forceSolid: false
         )

@@ -83,7 +83,7 @@ public final class RSPnPMinimalSolveAndPoseStabilityModule {
             let out = try solve(window)
 
             if DebugProbe.isEnabled(.capture) {
-                print("[RSPNP] success residual=\(fmt(out.residual)) conditioning=\(fmt(out.conditioning))")
+                Log.info(.shot, "RSPNP success residual=\(fmt(out.residual)) conditioning=\(fmt(out.conditioning))")
             }
 
             if !poseActive {
@@ -107,7 +107,7 @@ public final class RSPnPMinimalSolveAndPoseStabilityModule {
 
         } catch {
             if DebugProbe.isEnabled(.capture) {
-                print("[RSPNP] failed residual=nan conditioning=nan")
+                Log.info(.shot, "POSE lifetime_frames=\(poseLifetimeFrames)")
             }
 
             endPoseLifetime(reason: "solve_failed", nowSec: nowSec)
@@ -119,8 +119,7 @@ public final class RSPnPMinimalSolveAndPoseStabilityModule {
     private func endPoseLifetime(reason: String, nowSec: Double) {
         if poseActive {
             if DebugProbe.isEnabled(.capture) {
-                print("[POSE] lifetime_frames=\(poseLifetimeFrames)")
-            }
+                Log.info(.shot, "POSE lifetime_frames=\(poseLifetimeFrames)")            }
         }
 
         poseActive = false
@@ -137,15 +136,13 @@ public final class RSPnPMinimalSolveAndPoseStabilityModule {
             lastOutcome = msg
         }
         if DebugProbe.isEnabled(.capture) {
-            print(msg)
-        }
+            Log.info(.shot, msg)        }
     }
 
     private func logTransition(_ msg: String) {
         lastOutcome = msg
         if DebugProbe.isEnabled(.capture) {
-            print(msg)
-        }
+            Log.info(.shot, msg)        }
     }
 
     private func fmt(_ v: Double) -> String {

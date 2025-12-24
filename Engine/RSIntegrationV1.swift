@@ -82,7 +82,7 @@ final class RSIntegrationV1 {
         guard DebugProbe.isEnabled(.capture) else { return }
         guard newState != rsWindowLogState else { return }
         rsWindowLogState = newState
-        print(message)
+        Log.info(.shot, message)
     }
 
     // MARK: - Ingest (called once per eligible frame)

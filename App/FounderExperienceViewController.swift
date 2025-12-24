@@ -1,15 +1,23 @@
+//
+//  FounderExperienceViewController.swift
+//
+
 import UIKit
-import CoreMedia
 import MetalKit
+import CoreMedia
 
 @MainActor
-final class FounderExperienceViewController: UIViewController {
+final class FounderExperienceViewController: UIViewController,
+                                             CameraFrameDelegate,
+                                             FounderTelemetryObserver {
+
+    // MARK: - Core Systems
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
+
+    // MARK: - UI
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
-
-    var presentationMode: FounderPresentationMode = .shotSummary
 
     private let instructionLabel: UILabel = {
         let l = UILabel()
@@ -21,87 +29,80 @@ final class FounderExperienceViewController: UIViewController {
         return l
     }()
 
+    // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupLayout()
 
         view.backgroundColor = .black
+
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+        instructionLabel.translatesAutoresizingMaskIntoConstraints = false
+        summaryView.translatesAutoresizingMaskIntoConstraints = false
+        historyView.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(previewView)
+        view.addSubview(instructionLabel)
+        view.addSubview(summaryView)
+        view.addSubview(historyView)
+
+        NSLayoutConstraint.activate([
+            previewView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            previewView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.5),
+
+            instructionLabel.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 8),
+            instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+
+            summaryView.topAnchor.constraint(equalTo: instructionLabel.bottomAnchor, constant: 8),
+            summaryView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            summaryView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            summaryView.heightAnchor.constraint(equalToConstant: 120),
+
+            historyView.topAnchor.constraint(equalTo: summaryView.bottomAnchor),
+            historyView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            historyView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            historyView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        ])
+
+        // MARK: - Mode / Coordinator Wiring
+        DotTestMode.shared.previewEnabled = true
         DotTestMode.shared.isArmedForDetection = true
         DotTestMode.shared.founderTestModeEnabled = true
+
+        DotTestCoordinator.shared.previewView = previewView
         DotTestCoordinator.shared.founderDelegate = self
 
+        // MARK: - Camera
         camera.delegate = self
         camera.start()
     }
 
-    private func setupLayout() {
-        previewView.translatesAutoresizingMaskIntoConstraints = false
-        summaryView.translatesAutoresizingMaskIntoConstraints = false
-        historyView.translatesAutoresizingMaskIntoConstraints = false
-        instructionLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let panelStack = UIStackView(arrangedSubviews: [summaryView, historyView])
-        panelStack.axis = .vertical
-        panelStack.spacing = 12
-
-        let mainStack = UIStackView(arrangedSubviews: [previewView, panelStack])
-        mainStack.axis = .horizontal
-        mainStack.alignment = .fill
-        mainStack.distribution = .fillEqually
-        mainStack.spacing = 12
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-
-        view.addSubview(instructionLabel)
-        view.addSubview(mainStack)
-
-        NSLayoutConstraint.activate([
-            instructionLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-
-            mainStack.topAnchor.constraint(equalTo: instructionLabel.bottomAnchor, constant: 8),
-            mainStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            mainStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            mainStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
-        ])
-
-        summaryView.heightAnchor.constraint(equalTo: historyView.heightAnchor, multiplier: 0.8).isActive = true
+    // =====================================================================
+    // MARK: - CameraFrameDelegate
+    // =====================================================================
+    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
     }
 
-    private func handleShotUpdate(summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary]) {
-        guard presentationMode == .shotSummary else { return }
+    // =====================================================================
+    // MARK: - FounderTelemetryObserver
+    // =====================================================================
+
+    /// Per-frame telemetry (DO NOT update summary view here)
+    func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry) {
+        // Intentionally empty.
+        // Overlay + preview are already handled by the coordinator.
+    }
+
+    /// Shot completion only — THIS updates metrics
+    func didCompleteShot(
+        _ summary: ShotSummary,
+        history: [ShotRecord],
+        summaries: [ShotSummary]
+    ) {
         summaryView.update(with: summary)
         historyView.update(with: history, summaries: summaries)
-    }
-}
-
-extension FounderExperienceViewController: CameraFrameDelegate {
-    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
-        DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
-
-        previewView.render(
-            texture: yTex,
-            isR8: true
-        )
-    }
-}
-
-extension FounderExperienceViewController: FounderTelemetryObserver {
-    func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry) {
-        previewView.updateOverlay(
-            roi: telemetry.roi,
-            fullSize: telemetry.fullSize,
-            ballLocked: telemetry.ballLocked,
-            confidence: telemetry.confidence
-        )
-        if presentationMode == .frameDebug, let summary = DotTestCoordinator.shared.lastShotSummary {
-            historyView.update(with: DotTestCoordinator.shared.sessionHistory,
-                               summaries: DotTestCoordinator.shared.shotSummaries)
-            summaryView.update(with: summary)
-        }
-    }
-    func didCompleteShot(_ summary: ShotSummary, history: [ShotRecord], summaries: [ShotSummary]) {
-        handleShotUpdate(summary: summary, history: history, summaries: summaries)
     }
 }

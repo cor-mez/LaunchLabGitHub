@@ -1,3 +1,5 @@
+//MetalRenderer.swift
+
 import Foundation
 import Metal
 import MetalKit
@@ -23,7 +25,7 @@ struct Counter {
 final class MetalRenderer {
     
     static let shared = MetalRenderer()
-    
+    var disablePresentation: Bool = true
     let device: MTLDevice
     let queue: MTLCommandQueue
     let library: MTLLibrary
@@ -153,16 +155,7 @@ final class MetalRenderer {
                 zfar: 1
             )
         )
-        var uniforms = PreviewUniforms(
-            debugMode: PreviewDebugMode.rawY.rawValue,
-            threshold: 0.5
-        )
-        
-        enc.setFragmentBytes(
-            &uniforms,
-            length: MemoryLayout<PreviewUniforms>.stride,
-            index: 0
-        )
+      
         enc.setCullMode(.none)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         

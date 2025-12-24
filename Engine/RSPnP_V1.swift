@@ -196,7 +196,7 @@ final class RSPnPBridgeV1 {
         guard DebugProbe.isEnabled(.capture) else { return }
         if logState != .attempting {
             logState = .attempting
-            print("[RSPNP] attempted frames=\(window.frameCount)")
+            Log.info(.shot, "RSPNP attempted frames=\(window.frameCount)")
         }
     }
     
@@ -211,28 +211,22 @@ final class RSPnPBridgeV1 {
         case .skipped(let r):
             if logState != .idleSkip(r.logString) {
                 logState = .idleSkip(r.logString)
-                print("[RSPNP] \(r.logString)")
+                Log.info(.shot, r.logString)
             }
             
         case .failure(let f):
             if logState != .failure(f.logString) {
                 logState = .failure(f.logString)
-                print("[RSPNP] \(f.logString)")
+                Log.info(.shot, f.logString)
             }
             
         case .success(_, let residual, let conditioning):
             if logState != .success {
                 logState = .success
                 
-                // Existing summary log
-                print(
-                    "[RSPNP] success residual=\(String(format: "%.4f", residual)) " +
-                    "cond=\(String(format: "%.4f", conditioning))"
-                )
-                
-                // 🔍 NEW: explicit solver-boundary confirmation
-                print(
-                    "[DEBUG][RSPNP] solver success " +
+                Log.info(
+                    .shot,
+                    "RSPNP success " +
                     "frames=\(window.frameCount) " +
                     "residual=\(String(format: "%.4f", residual)) " +
                     "cond=\(String(format: "%.4f", conditioning))"

@@ -1,7 +1,3 @@
-//
-//  DotTestViewController.swift
-//
-
 import UIKit
 import CoreMedia
 import CoreVideo
@@ -11,9 +7,11 @@ import MetalKit
 final class DotTestViewController: UIViewController {
 
     private let camera = CameraCapture()
-    private let previewView = DotTestPreviewView(frame: .zero, device: nil)
-
-    // DotTestViewController.swift
+    private var lastUIUpdateTime: CFTimeInterval = 0
+    private let previewView = DotTestPreviewView(
+        frame: .zero,
+        device: MetalRenderer.shared.device
+    )
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -30,9 +28,10 @@ final class DotTestViewController: UIViewController {
             previewView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        DebugProbe.enabledPhases = [.capture]
+        view.layoutIfNeeded()
+        previewView.drawableSize = previewView.bounds.size
 
-        // ✅ ADD THIS LINE
+        DotTestMode.shared.previewEnabled = true
         DotTestMode.shared.isArmedForDetection = true
 
         camera.delegate = self
@@ -48,23 +47,27 @@ extension DotTestViewController: CameraFrameDelegate {
 
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
 
-        DebugProbe.probePixelBuffer(pixelBuffer)
-        DebugProbe.probeYPlaneBytes(pixelBuffer, count: 16)
+        let now = CACurrentMediaTime()
+        guard now - lastUIUpdateTime >= (1.0 / 60.0) else { return }
+        lastUIUpdateTime = now
 
         let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
 
-        DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
-
-        previewView.updateOverlay(
-            fullSize: DotTestCoordinator.shared.currentFullSize(),
-            roi: DotTestCoordinator.shared.currentROI(),
-            sr: CGFloat(DotTestMode.shared.srScale)
+        DotTestCoordinator.shared.processFrame(
+            pixelBuffer,
+            timestamp: timestamp
         )
 
         previewView.render(
             texture: yTex,
             isR8: true,
             forceSolidColor: false
+        )
+
+        previewView.updateOverlay(
+            fullSize: DotTestCoordinator.shared.lastFull,
+            roi: DotTestCoordinator.shared.lastROI,
+            sr: CGFloat(DotTestMode.shared.srScale)
         )
     }
 }

@@ -14,19 +14,6 @@ extension DebugProbe {
            
             return
         }
-
-        print(
-            "[\(phase.rawValue.uppercased())]",
-            label,
-            "w:",
-            t.width,
-            "h:",
-            t.height,
-            "fmt:",
-            t.pixelFormat.rawValue,
-            "usage:",
-            t.usage.rawValue
-        )
     }
 
     static func probeDrawable(
@@ -35,13 +22,5 @@ extension DebugProbe {
         phase: DebugPhase = .preview
     ) {
         guard isEnabled(phase) else { return }
-
-        print(
-            "[\(phase.rawValue.uppercased())]",
-            "drawable:",
-            drawable != nil,
-            "size:",
-            size
-        )
     }
 }

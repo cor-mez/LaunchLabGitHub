@@ -165,7 +165,7 @@ final class MarkerlessDiscriminationGates {
         if DebugProbe.isEnabled(.capture),
            cfg.summaryEveryNEvals > 0,
            (evalCount % cfg.summaryEveryNEvals) == 0 {
-            print("[MDG][SUMMARY] eval=\(evalCount) accept=\(acceptCount) geomReject=\(geomRejectCount) motionReject=\(motionRejectCount)")
+            Log.info(.detection, "MDG SUMMARY eval=\(evalCount) accept=\(acceptCount) geomReject=\(geomRejectCount) motionReject=\(motionRejectCount)")
         }
 
         // Update motion history
@@ -268,9 +268,9 @@ final class MarkerlessDiscriminationGates {
         lastLogKeyGeom = key
 
         if ballLike {
-            print("[MDG][GEOM] accept ball-like compactness=\(String(format: "%.3f", compactness)) anisotropy=\(String(format: "%.2f", anisotropy))")
+            Log.info(.detection, "MDG GEOM accept compactness=\(compactness) anisotropy=\(anisotropy)")
         } else {
-            print("[MDG][GEOM] reject edge-like anisotropy=\(String(format: "%.2f", anisotropy)) compactness=\(String(format: "%.3f", compactness)) reason=\(reason ?? "unknown")")
+            Log.info(.detection, "MDG GEOM reject anisotropy=\(anisotropy) compactness=\(compactness) reason=\(reason ?? "unknown")")
         }
     }
 
@@ -283,11 +283,11 @@ final class MarkerlessDiscriminationGates {
         lastLogKeyMotion = key
 
         if ballLike {
-            print("[MDG][MOTION] accept coherent motion v=\(vStr) px/s")
+            Log.info(.detection, "MDG MOTION accept v=\(vStr) px/s")
         } else if reason == "static/background_candidate" {
-            print("[MDG][MOTION] reject static/background candidate v=\(vStr) px/s")
+            Log.info(.detection, "MDG MOTION reject static v=\(vStr) px/s")
         } else if reason == "teleport/discontinuity" {
-            print("[MDG][MOTION] reject teleport/discontinuity v=\(vStr) px/s")
+            Log.info(.detection, "MDG MOTION reject teleport v=\(vStr) px/s")
         }
     }
 

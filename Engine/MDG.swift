@@ -38,7 +38,7 @@ final class MarkerlessDiscriminationGate {
 
             if motionPxPerFrame < 0.05 {
                 if DebugProbe.isEnabled(.capture) {
-                    print("[MDG][MOTION] reject static v=\(motionPxPerFrame)")
+                    Log.info(.detection, "MDG MOTION reject static v=\(motionPxPerFrame)")
                 }
                 return MDGDecision(
                     ballLikeEvidence: false,
@@ -51,7 +51,7 @@ final class MarkerlessDiscriminationGate {
         // Geometric gate placeholder (next step)
         // ----------------------------
         if DebugProbe.isEnabled(.capture) {
-            print("[MDG][GEOM] accept (placeholder)")
+            Log.info(.detection, "MDG GEOM accept placeholder")
         }
 
         return MDGDecision(

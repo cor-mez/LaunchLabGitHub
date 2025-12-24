@@ -7,8 +7,7 @@ public protocol RSPnPLogSink {
 public struct PrintRSPnPLogSink: RSPnPLogSink {
     public init() {}
     public func emit(_ line: String) {
-        Swift.print(line)
-    }
+        Log.info(.shot, line)    }
 }
 
 /// Telemetry snapshot captured at the moment we decide to skip/attempt/fail/succeed.

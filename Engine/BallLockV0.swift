@@ -16,27 +16,38 @@ final class BallLockV0 {
     // ------------------------------------------------------------------
     // Spatial parameters (tuned)
     // ------------------------------------------------------------------
-    private let clusterRadius: CGFloat = 25.0
-    private let minPoints: Int = 8
+    private let clusterRadius: CGFloat = 40.0
+    private let minPoints: Int = 4
 
     // ------------------------------------------------------------------
     // Temporal stability parameters (bounded memory)
     // ------------------------------------------------------------------
-    private let requiredStableFrames: Int = 2
+    private let requiredStableFrames: Int = 3
     private let maxMemoryAge: Int = 10
 
     private var lastCenter: CGPoint?
     private var stableCount: Int = 0
     private var memoryAge: Int = 0
 
+    /// Binary lock invariant — the ONLY thing downstream should trust
+    var isLocked: Bool {
+        return stableCount >= requiredStableFrames && memoryAge == 0
+    }
+
     /// Finds the densest spatial cluster of points.
     /// Expects points in ROI space.
     func findBallCluster(from points: [CGPoint]) -> BallCluster? {
 
         // --------------------------------------------------------------
+        // Global minimum gate (absence = reset)
+        // --------------------------------------------------------------
+        // --------------------------------------------------------------
         // Global minimum gate
         // --------------------------------------------------------------
         guard points.count >= minPoints else {
+            if DebugProbe.isEnabled(.capture) {
+                Log.info(.ballLock, "rejected points=\(points.count)")
+            }
             resetTemporalState()
             return nil
         }
@@ -63,10 +74,10 @@ final class BallLockV0 {
         }
 
         // --------------------------------------------------------------
-        // Cluster size gate
+        // Cluster size gate (absence = reset)
         // --------------------------------------------------------------
         guard bestCluster.count >= minPoints else {
-            ageOrReset()
+            resetTemporalState()
             return nil
         }
 
@@ -83,18 +94,19 @@ final class BallLockV0 {
         )
 
         // --------------------------------------------------------------
-        // Temporal stability + bounded memory
+        // Temporal stability (no grace on disappearance)
         // --------------------------------------------------------------
         if let last = lastCenter {
             let dx = center.x - last.x
             let dy = center.y - last.y
             let distSq = dx * dx + dy * dy
 
-            if distSq <= clusterRadius * clusterRadius {
+            if distSq <= (clusterRadius * clusterRadius * 1.5) {
                 stableCount += 1
                 memoryAge = 0
             } else {
-                memoryAge += 1
+                resetTemporalState()
+                return nil
             }
         } else {
             stableCount = 0
@@ -102,14 +114,6 @@ final class BallLockV0 {
         }
 
         lastCenter = center
-
-        // --------------------------------------------------------------
-        // Memory expiration
-        // --------------------------------------------------------------
-        if memoryAge > maxMemoryAge {
-            resetTemporalState()
-            return nil
-        }
 
         // --------------------------------------------------------------
         // Stable acceptance
@@ -126,13 +130,6 @@ final class BallLockV0 {
     }
 
     // MARK: - Helpers
-
-    private func ageOrReset() {
-        memoryAge += 1
-        if memoryAge > maxMemoryAge {
-            resetTemporalState()
-        }
-    }
 
     private func resetTemporalState() {
         stableCount = 0

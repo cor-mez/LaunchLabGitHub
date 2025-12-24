@@ -40,7 +40,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		059792932EEA115D00603B25 /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
+		F4BD88892EFA598C00DE7839 /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -53,7 +53,7 @@
 		051316302ED1451D00B539FF /* info */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				059792932EEA115D00603B25 /* Exceptions for "info" folder in "LaunchLabGitHub" target */,
+				F4BD88892EFA598C00DE7839 /* Exceptions for "info" folder in "LaunchLabGitHub" target */,
 			);
 			path = info;
 			sourceTree = "<group>";
@@ -435,7 +435,7 @@
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
-				INFOPLIST_FILE = /Users/corymeza/Developer/LaunchLabGitHub/info/Info.plist;
+				INFOPLIST_FILE = "$(PROJECT_DIR)/info/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;
@@ -492,7 +492,7 @@
 					"$(PROJECT_DIR)/Vision/Cpp/opencv2.framework/Headers/**",
 					"$(PROJECT_DIR)/Vision/Cpp/**",
 				);
-				INFOPLIST_FILE = /Users/corymeza/Developer/LaunchLabGitHub/info/Info.plist;
+				INFOPLIST_FILE = "$(PROJECT_DIR)/info/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = NO;

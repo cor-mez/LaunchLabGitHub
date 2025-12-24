@@ -8,8 +8,9 @@ import MetalKit
 
 @MainActor
 final class DotTestMode: ObservableObject {
-
+    
     static let shared = DotTestMode()
+    var previewEnabled: Bool = false
 
     private init() {}
 

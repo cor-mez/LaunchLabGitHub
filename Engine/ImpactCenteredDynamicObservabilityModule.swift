@@ -276,7 +276,7 @@ public final class ImpactCenteredDynamicObservabilityModule {
 
     private func log(_ msg: String) {
         guard DebugProbe.isEnabled(.capture) else { return }
-        print(msg)
+        Log.info(.detection, msg)
     }
 
     private func fmt(_ v: Double?) -> String {

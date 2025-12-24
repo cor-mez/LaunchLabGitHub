@@ -7,7 +7,7 @@ import MetalKit
 final class RenderPreview {
 
     static let shared = RenderPreview()
-
+    private let previewEnabled = false
     let device: MTLDevice
     let queue: MTLCommandQueue
     let pipe: MTLRenderPipelineState

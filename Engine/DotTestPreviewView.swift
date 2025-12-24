@@ -1,7 +1,3 @@
-//
-//  DotTestPreviewView.swift
-//
-
 import MetalKit
 import UIKit
 
@@ -12,10 +8,10 @@ final class DotTestPreviewView: MTKView {
     private var currentIsR8: Bool = false
     private var currentForceSolid: Bool = false
 
-    // 🔵 Debug overlay
     private let overlayLayer = DotTestOverlayLayer()
 
-    // MARK: - Init ------------------------------------------------------------
+    private var lastDrawTime: CFTimeInterval = 0
+    private let minFrameInterval: CFTimeInterval = 1.0 / 60.0
 
     override init(frame: CGRect, device: MTLDevice?) {
         super.init(frame: frame, device: device ?? MetalRenderer.shared.device)
@@ -31,24 +27,20 @@ final class DotTestPreviewView: MTKView {
     private func commonInit() {
         framebufferOnly = false
         colorPixelFormat = .bgra8Unorm
-        isPaused = false
-        enableSetNeedsDisplay = false
+
+        isPaused = true
+        enableSetNeedsDisplay = true
         delegate = self
 
-        // 🔵 Attach overlay ABOVE Metal content
         overlayLayer.contentsScale = UIScreen.main.scale
         overlayLayer.isOpaque = false
         layer.addSublayer(overlayLayer)
     }
 
-    // MARK: - Layout ----------------------------------------------------------
-
     override func layoutSubviews() {
         super.layoutSubviews()
         overlayLayer.frame = bounds
     }
-
-    // MARK: - Render API ------------------------------------------------------
 
     func render(
         texture: MTLTexture?,
@@ -58,9 +50,8 @@ final class DotTestPreviewView: MTKView {
         currentTexture = texture
         currentIsR8 = isR8
         currentForceSolid = forceSolidColor
+        setNeedsDisplay()
     }
-
-    // MARK: - Overlay Update --------------------------------------------------
 
     func updateOverlay(
         fullSize: CGSize,
@@ -75,18 +66,23 @@ final class DotTestPreviewView: MTKView {
     }
 }
 
-// -----------------------------------------------------------------------------
-// MARK: - MTKViewDelegate
-// -----------------------------------------------------------------------------
-
 extension DotTestPreviewView: MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+
+        let now = CACurrentMediaTime()
+        guard now - lastDrawTime >= minFrameInterval else { return }
+        lastDrawTime = now
+
+        guard let tex = currentTexture else { return }
+        guard let _ = view.currentDrawable else { return }
+        guard let _ = view.currentRenderPassDescriptor else { return }
+
         MetalRenderer.shared.renderPreview(
-            texture: currentTexture,
-            in: self,
+            texture: tex,
+            in: view,
             isR8: currentIsR8,
             forceSolid: currentForceSolid
         )

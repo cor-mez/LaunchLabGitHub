@@ -11,8 +11,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         let window = OrientationLockedWindow(windowScene: windowScene)
-        let vc = FounderExperienceViewController()
+
+        let vc = DotTestViewController()
         window.rootViewController = vc
+
         window.makeKeyAndVisible()
         self.window = window
     }

@@ -1,3 +1,8 @@
+//
+//  RSPnPPoseStabilityCharacterizer.swift
+//  Pose Stability Characterization (Logging-Cleaned)
+//
+
 import Foundation
 import simd
 
@@ -58,19 +63,13 @@ public final class RSPnPPoseStabilityCharacterizer {
     /// Called when pose is refused, skipped, or failed
     public func observeNoPose(nowSec: Double, reason: String) {
 
-        if runSampleCount > 0 {
-            if DebugProbe.isEnabled(.capture) {
-                print("[POSE] lifetime_frames=\(runSampleCount)")
-            }
+        if runSampleCount > 0, DebugProbe.isEnabled(.capture) {
+            Log.info(.shot, "RSWINDOW cleared (\(reason))")
         }
 
         anchorPose = nil
         lastPose = nil
         runSampleCount = 0
-
-        if DebugProbe.isEnabled(.capture) {
-            print("[POSE] none reason=\(reason)")
-        }
     }
 
     /// Called only on successful pose emission
@@ -87,7 +86,12 @@ public final class RSPnPPoseStabilityCharacterizer {
             runSampleCount = 0
 
             if DebugProbe.isEnabled(.capture) {
-                print("[POSE] run_start conf=\(fmt(context.confidence)) span=\(fmt(context.spanSec))")
+                Log.info(
+                    .shot,
+                    "RSWINDOW accepted t=\(fmt(nowSec)) " +
+                    "count=\(context.frameCount) " +
+                    "conf=\(fmt(context.confidence))"
+                )
             }
         }
 
@@ -99,20 +103,29 @@ public final class RSPnPPoseStabilityCharacterizer {
             return
         }
 
-        if let prev = lastPose {
+        if let prev = lastPose, DebugProbe.isEnabled(.capture) {
             let dT = translationDelta(from: prev, to: pose)
             let dR = rotationDeltaDeg(from: prev, to: pose)
 
-            print("[POSE] delta_t=\(fmt(dT)) delta_r=\(fmt(dR))")
+            Log.info(
+                .shot,
+                "[POSE] delta_t=\(fmt(dT)) delta_r=\(fmt(dR))"
+            )
         }
 
-        if let anchor = anchorPose {
+        if let anchor = anchorPose, DebugProbe.isEnabled(.capture) {
             let driftT = translationDelta(from: anchor, to: pose)
             let driftR = rotationDeltaDeg(from: anchor, to: pose)
 
-            print("[POSE] drift_t=\(fmt(driftT)) drift_r=\(fmt(driftR))")
-            print(
-                "[POSE] correlate conf=\(fmt(context.confidence)) " +
+            Log.info(
+                .shot,
+                "[POSE] drift_t=\(fmt(driftT)) drift_r=\(fmt(driftR))"
+            )
+
+            Log.info(
+                .shot,
+                "[POSE] correlate " +
+                "conf=\(fmt(context.confidence)) " +
                 "span=\(fmt(context.spanSec)) " +
                 "motion=\(fmt(context.motionPx))"
             )

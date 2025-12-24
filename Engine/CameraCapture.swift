@@ -128,7 +128,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             try device.lockForConfiguration()
 
             // ----------------------------
-            // Select a format that actually supports 240 FPS
+            // Select a format that supports target FPS
             // ----------------------------
             if let format = selectBestHighSpeedFormat(
                 device: device,
@@ -136,7 +136,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             ) {
                 device.activeFormat = format
             } else {
-                print("[CAMERA] ⚠️ No format supports \(desiredFPS) FPS on this device")
+                Log.info(.camera, "No format supports \(desiredFPS) FPS")
                 device.unlockForConfiguration()
                 return
             }
@@ -166,7 +166,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
 
             // ----------------------------
-            // Frame Rate (now SAFE)
+            // Frame Rate
             // ----------------------------
             let duration = CMTime(
                 value: 1,
@@ -177,16 +177,20 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
             device.unlockForConfiguration()
 
+            // ----------------------------
+            // Debug Log (capture-only)
+            // ----------------------------
             if DebugProbe.isEnabled(.capture) {
-                print(
-                    "[CAMERA] locked fps=\(desiredFPS) " +
-                    "iso=\(device.iso) " +
-                    "shutter=\(CMTimeGetSeconds(device.exposureDuration))"
+                Log.info(
+                    .camera,
+                    "locked fps=\(desiredFPS) " +
+                    "iso=\(String(format: "%.2f", device.iso)) " +
+                    "shutter=\(String(format: "%.5f", CMTimeGetSeconds(device.exposureDuration)))"
                 )
             }
 
         } catch {
-            print("[CAMERA] lock failed: \(error)")
+            Log.info(.camera, "lock failed: \(error)")
         }
     }
 
