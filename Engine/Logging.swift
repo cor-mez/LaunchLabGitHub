@@ -3,7 +3,8 @@
 //  LaunchLab
 //
 //  Centralized, phase-gated logging for the engine.
-//  All console output should route through this file.
+//  All console output must route through this file.
+//  No direct print() calls elsewhere in the codebase.
 //
 
 import Foundation
@@ -15,6 +16,7 @@ enum LogPhase: String {
     case render
     case detection
     case ballLock
+    case authority   // ✅ NEW: ShotAuthorityGate logs
     case shot
     case pose
     case rswindow
@@ -28,9 +30,10 @@ enum Log {
     /// Enabled log phases.
     /// Modify this set to control console verbosity globally.
     static var enabled: Set<LogPhase> = [
-        .detection,
-        .ballLock,
-        .shot
+        .authority,   // ✅ required for this module
+        .shot         // keep if you want lifecycle logs visible
+        // .detection,
+        // .ballLock,
         // .camera,
         // .render,
         // .pose,
@@ -49,8 +52,7 @@ enum Log {
         Swift.print("[\(phase.rawValue.uppercased())] \(message())")
     }
 
-    /// Explicit debug-only logging.
-    /// Intended for temporary instrumentation.
+    /// Debug-only logging (guarded by DebugProbe + phase).
     @inline(__always)
     static func debug(
         _ phase: LogPhase,

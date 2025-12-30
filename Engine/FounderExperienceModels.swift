@@ -35,17 +35,6 @@ struct ShotSummary {
     let dispersionYards: Double?
 }
 
-struct UnitConverter {
-    static func pxPerSecToMPH(_ pxPerSec: Double, scale: SceneScale) -> Double {
-        let metersPerSec = pxPerSec / scale.pixelsPerMeter
-        return metersPerSec * 2.23694
-    }
-
-    static func metersToYards(_ meters: Double) -> Double {
-        return meters * 1.09361
-    }
-}
-
 enum ImpactClassification: String {
     case clean = "Clean"
     case thin = "Thin"

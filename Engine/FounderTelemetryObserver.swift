@@ -1,23 +1,29 @@
 //
 //  FounderTelemetryObserver.swift
+//  LaunchLab
+//
+//  Engine → App telemetry boundary
 //
 
 import Foundation
 
 protocol FounderTelemetryObserver: AnyObject {
+
     func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry)
+
     func didCompleteShot(
-        _ summary: ShotSummary,
+        _ summary: EngineShotSummary,
         history: [ShotRecord],
-        summaries: [ShotSummary]
+        summaries: [EngineShotSummary]
     )
 }
 
-// Default empty implementation so conformers can ignore it
+// Default empty implementation so conformers can ignore completion events
 extension FounderTelemetryObserver {
+
     func didCompleteShot(
-        _ summary: ShotSummary,
+        _ summary: EngineShotSummary,
         history: [ShotRecord],
-        summaries: [ShotSummary]
+        summaries: [EngineShotSummary]
     ) {}
 }

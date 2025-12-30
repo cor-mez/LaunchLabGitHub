@@ -1,5 +1,9 @@
 //
 //  DotTestCoordinator.swift
+//  LaunchLab
+//
+//  Central engine coordinator (V1)
+//  Motion-first shot detection, no HUDs.
 //
 
 import Foundation
@@ -8,185 +12,246 @@ import CoreVideo
 import CoreGraphics
 import Metal
 
-
 @MainActor
 final class DotTestCoordinator {
-
-    // MARK: - Singleton
+    
     static let shared = DotTestCoordinator()
-
-    // MARK: - Core Systems
-    let mode = DotTestMode.shared
-    let detector = MetalDetector.shared
-    let renderer = MetalRenderer.shared
-    let ballLock = BallLockV0()
-
+    
+    let mode      = DotTestMode.shared
+    let detector  = MetalDetector.shared
+    let ballLock  = BallLockV0()
+    let ballSpeedTracker = BallSpeedTracker()
+    private let shotLifecycle = ShotLifecycleController()
+    
     weak var previewView: FounderPreviewView?
     weak var founderDelegate: FounderTelemetryObserver?
-    weak var poseEligibilityDelegate: PoseEligibilityDelegate?
-
-    // MARK: - Frame State
+    
     private var frameIndex: Int = 0
     private let detectionInterval: Int = 3
+    private let rawMotionLogger = RawMotionLogger()
+    // MARK: - Shot Authority
 
-    var lastROI: CGRect  = .zero
+    private let authorityGate = ShotAuthorityGate()
+
+    private var authorityIdleFrames: Int = 0
+    private var lastAuthoritativeShotTimestampSec: Double? = nil
+
+    // Used to emit approach → impact → separation phases without inventing new sensors
+    private var wasMovingLastTick: Bool = false
+    
+    var lastROI: CGRect = .zero
     var lastFull: CGSize = .zero
     
-    
-    // MARK: - BallLock State
-    private struct BallLockMemory {
-        var center: CGPoint
-        var radius: CGFloat
-        var age: Int
-    }
-
-    private var ballLockMemory: BallLockMemory?
-    private var smoothedBallLockCount: Float = 0
-
     private init() {}
-
-    // =====================================================================
-    // MARK: - FRAME ENTRY POINT
-    // =====================================================================
+    
+    // MARK: - Frame Entry
+    
     func processFrame(_ pb: CVPixelBuffer, timestamp: CMTime) {
-
+        
         frameIndex += 1
-
         guard frameIndex % detectionInterval == 0 else { return }
         guard mode.isArmedForDetection else { return }
-
-        let ts = CMTimeGetSeconds(timestamp)
-
+        
+        let t = CMTimeGetSeconds(timestamp)
         let w = CVPixelBufferGetWidth(pb)
         let h = CVPixelBufferGetHeight(pb)
         guard w > 32, h > 32 else { return }
-
-        let fullSize = CGSize(width: w, height: h)
-        lastFull = fullSize
-
-        let roiSize: CGFloat = 100
+        
+        lastFull = CGSize(width: w, height: h)
+        
         let roi = CGRect(
-            x: fullSize.width * 0.5 - roiSize * 0.5,
-            y: fullSize.height * 0.5 - roiSize * 0.5,
-            width: roiSize,
-            height: roiSize
+            x: lastFull.width * 0.5 - 50,
+            y: lastFull.height * 0.5 - 50,
+            width: 100,
+            height: 100
         ).integral
-
+        
         lastROI = roi
         
-        if DebugProbe.isEnabled(.capture) {
-            Log.info(.detection, "ROI=\(lastROI) full=\(lastFull)")
-        }
-
-        detectGPU(
-            pb: pb,
-            roi: roi,
-            fullSize: fullSize,
-            timestampSec: ts
-        )
+        detectGPU(pb: pb, roi: roi, timestampSec: t)
     }
-
-    // =====================================================================
-    // MARK: - GPU DETECTION (FAST9 READBACK)
-    // =====================================================================
+    
+    // MARK: - GPU Detection
+    
     private func detectGPU(
         pb: CVPixelBuffer,
         roi: CGRect,
-        fullSize: CGSize,
         timestampSec: Double
     ) {
-
-        detector.fast9ThresholdY = mode.fast9ThresholdY
-        detector.fast9ScoreMinY  = mode.fast9ScoreMinY
-        detector.nmsRadius       = mode.fast9NmsRadius
-
+        
         detector.prepareFrameY(
             pb,
             roi: roi,
             srScale: mode.srScale
         )
-
+        
         let scored = detector.gpuFast9ScoredCornersY()
-        guard !scored.isEmpty else {
-            publishTelemetry(
-                roi: roi,
-                fullSize: fullSize,
-                locked: false,
-                confidence: 0,
-                center: nil,
-                timestampSec: timestampSec
-            )
-            return
-        }
-
         let points = scored.map { $0.point }
-
+        
+        var confidence: Float = 0
+        var center: CGPoint? = nil
+        
         if let cluster = ballLock.findBallCluster(from: points) {
-            ballLockMemory = BallLockMemory(
-                center: cluster.center,
-                radius: cluster.radius,
-                age: 0
-            )
-            smoothedBallLockCount =
-                0.3 * Float(cluster.count) +
-                0.7 * smoothedBallLockCount
-
-            publishTelemetry(
-                roi: roi,
-                fullSize: fullSize,
-                locked: true,
-                confidence: smoothedBallLockCount,
-                center: cluster.center,
+            
+            confidence = Float(cluster.count)
+            center = cluster.center
+            
+            // --- speed sampling (observation only) ---
+            ballSpeedTracker.ingest(
+                position: cluster.center,
                 timestampSec: timestampSec
             )
+            
+            rawMotionLogger.log(
+                timestampSec: timestampSec,
+                center: cluster.center,
+                clusterCount: cluster.count
+            )
+            
         } else {
-            ballLockMemory = nil
-            smoothedBallLockCount = 0
-
-            publishTelemetry(
-                roi: roi,
-                fullSize: fullSize,
-                locked: false,
-                confidence: 0,
-                center: nil,
-                timestampSec: timestampSec
-            )
+            
+            rawMotionLogger.logUnlocked(timestampSec: timestampSec)
+            ballSpeedTracker.reset()
         }
-    }
-
-    // =====================================================================
-    // MARK: - TELEMETRY
-    // =====================================================================
-    private func publishTelemetry(
-        roi: CGRect,
-        fullSize: CGSize,
-        locked: Bool,
-        confidence: Float,
-        center: CGPoint?,
-        timestampSec: Double
-    ) {
-
-        let telemetry = FounderFrameTelemetry(
-            roi: roi,
-            fullSize: fullSize,
-            ballLocked: locked,
-            confidence: confidence,
-            center: center,
-            mdgDecision: nil,
-            motionGatePxPerSec: 0,
+        
+        // --- compute instantaneous speed (no decisions here) ---
+        
+        let speedSample = ballSpeedTracker.compute(
+            pixelsPerMeter: Double(max(lastFull.width, lastFull.height))
+        )
+        
+        // Derive motion phase safely
+        let motionPhase: MotionDensityPhase
+        if let pxPerSec = speedSample?.pxPerSec, pxPerSec > 0 {
+            motionPhase = .impact
+        } else {
+            motionPhase = .idle
+        }
+        
+        // Define lockedNow explicitly
+        let lockedNow: Bool = confidence > 0
+        
+        // Build lifecycle input (no interpretation)
+        let input = ShotLifecycleInput(
             timestampSec: timestampSec,
-            sceneScale: SceneScale(
-                pixelsPerMeter: Double(max(fullSize.width, fullSize.height))
+            ballLockConfidence: confidence,
+            motionDensityPhase: motionPhase,
+            ballSpeedPxPerSec: speedSample?.pxPerSec,
+            refusalReason: nil
+        )
+        
+        // --- lifecycle update ---
+        if let record = shotLifecycle.update(input) {
+
+            ballSpeedTracker.reset()
+
+            let summary = ShotSummaryAdapter.makeEngineSummary(
+                from: record,
+                ballSpeedMPH: speedSample?.mph
             )
-        )
 
-        previewView?.updateOverlay(
-            roi: roi,
-            fullSize: fullSize,
-            ballLocked: locked,
-            confidence: confidence
-        )
+            let tStr = String(format: "%.3f", timestampSec)
+            let confStr = String(format: "%.1f", confidence)
 
-        founderDelegate?.didUpdateFounderTelemetry(telemetry)
+            let pxPerSecStr: String
+            if let px = speedSample?.pxPerSec {
+                pxPerSecStr = String(format: "%.1f", px)
+            } else {
+                pxPerSecStr = "n/a"
+            }
+
+            let lockedStr = lockedNow ? "true" : "false"
+
+            Log.info(
+                .shot,
+                "raw_motion " +
+                "t=\(tStr) " +
+                "conf=\(confStr) " +
+                "px_s=\(pxPerSecStr) " +
+                "locked=\(lockedStr)"
+            )
+            // --------------------------------------------------------------
+            // Shot Authority Gate (the ONLY permission layer for shot start)
+            // --------------------------------------------------------------
+
+            let instantaneousPxPerSec = ballSpeedTracker.lastInstantaneousPxPerSec ?? 0
+
+            // Presence (input only; no new sensors)
+            let presenceOk = confidence >= authorityGate.config.presenceConfidenceThreshold
+
+            // Motion candidate (input only)
+            let movingNow = presenceOk && (instantaneousPxPerSec >= authorityGate.config.minMotionPxPerSec)
+
+            // Motion phase derivation (outside the gate; gate consumes it)
+            let motionPhase: MotionDensityPhase = {
+                if !presenceOk { return .idle }
+
+                if movingNow {
+                    // First motion frame => approach; subsequent => impact
+                    return wasMovingLastTick ? .impact : .approach
+                } else {
+                    // First frame after motion stops => separation; otherwise idle
+                    return wasMovingLastTick ? .separation : .idle
+                }
+            }()
+
+            wasMovingLastTick = movingNow
+
+            // framesSinceIdle (context input; NOT derived inside the gate)
+            if motionPhase == .idle {
+                authorityIdleFrames = min(authorityIdleFrames + 1, 100000)
+            } else {
+                authorityIdleFrames = 0
+            }
+
+            let timeSinceLastAuth = lastAuthoritativeShotTimestampSec.map { timestampSec - $0 }
+
+            // lifecycle context (input)
+            let lifecycleCtx: ShotAuthorityLifecycleState = (shotLifecycle.state == .idle) ? .idle : .inProgress
+
+            let decision = authorityGate.update(
+                ShotAuthorityInput(
+                    timestampSec: timestampSec,
+                    ballLockConfidence: confidence,
+                    clusterCompactness: nil,
+                    instantaneousPxPerSec: instantaneousPxPerSec,
+                    motionPhase: motionPhase,
+                    framesSinceIdle: authorityIdleFrames,
+                    timeSinceLastAuthoritativeShotSec: timeSinceLastAuth,
+                    lifecycleState: lifecycleCtx
+                )
+            )
+
+            let authorizedNow: Bool = {
+                if case .authorized = decision { return true }
+                return false
+            }()
+
+            if authorizedNow {
+                lastAuthoritativeShotTimestampSec = timestampSec
+            }
+
+            // --------------------------------------------------------------
+            // INTEGRATION RULE (MANDATORY)
+            // Only allow idle → preImpact if authorizedNow == true.
+            // --------------------------------------------------------------
+
+            let shouldFeedLifecycle = (shotLifecycle.state != .idle) || authorizedNow
+            guard shouldFeedLifecycle else { return }
+
+            // When lifecycle is already in progress, we pass through true signals.
+            // When idle, we only pass through on authorizedNow (guard above).
+            let lifecycleInput = ShotLifecycleInput(
+                timestampSec: timestampSec,
+                ballLockConfidence: confidence,
+                motionDensityPhase: motionPhase,
+                ballSpeedPxPerSec: instantaneousPxPerSec,
+                refusalReason: nil
+            )
+
+            if let record = shotLifecycle.update(lifecycleInput) {
+                // Keep your existing completion handling here
+                // (session store, summary adapter, etc.)
+            } }
     }
 }
