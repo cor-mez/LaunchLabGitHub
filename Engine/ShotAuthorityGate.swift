@@ -2,22 +2,12 @@
 //  ShotAuthorityGate.swift
 //  LaunchLab
 //
-//  Engine-only "bouncer" for shot starts (V1)
-//  ------------------------------------------------------------
-//  This module decides ONLY whether a motion event is allowed to
-//  become a shot. It does not compute metrics, smooth data, or
-//  modify BallLock / FAST9 / lifecycle internals.
+//  Shot Authority Gate (V1)
 //
-//  Outputs:
-//    - notArmed(reason:)
-//    - armed
-//    - authorized
-//
-//  Logging (MANDATORY, transition-based; no per-frame spam):
-//    [AUTHORITY] armed ...
-//    [AUTHORITY] disarmed reason=...
-//    [AUTHORITY] authorized ...
-//    [AUTHORITY] blocked reason=...
+//  Role:
+//  - Decide if the system is allowed to declare a shot start.
+//  - Binary decisions only; no scoring.
+//  - Logs transitions only (no per-frame spam).
 //
 
 import Foundation
@@ -28,294 +18,266 @@ enum ShotAuthorityDecision: Equatable {
     case notArmed(reason: String)
     case armed
     case authorized
-
-    var isAuthorized: Bool {
-        if case .authorized = self { return true }
-        return false
-    }
-
-    var isArmed: Bool {
-        if case .armed = self { return true }
-        return false
-    }
 }
 
-// MARK: - Context (input contract)
+// MARK: - Lifecycle State Input (context authority)
 
 enum ShotAuthorityLifecycleState: String, Equatable {
     case idle
     case inProgress
-    case cooldown
-}
-
-// MARK: - Input Snapshot
-
-struct ShotAuthorityInput: Equatable {
-    let timestampSec: Double
-
-    // Presence authority
-    let ballLockConfidence: Float
-    let clusterCompactness: Double?  // pass nil if unavailable
-
-    // Motion authority
-    let instantaneousPxPerSec: Double
-    let motionPhase: MotionDensityPhase
-
-    // Context authority
-    let framesSinceIdle: Int
-    let timeSinceLastAuthoritativeShotSec: Double?   // nil if never
-    let lifecycleState: ShotAuthorityLifecycleState
 }
 
 // MARK: - Config
 
-struct ShotAuthorityConfig: Equatable {
+struct ShotAuthorityGateConfig: Equatable {
 
-    // Presence must be strong enough to consider motion "real"
-    var presenceConfidenceThreshold: Float = 120
+    /// Presence authority threshold (BallLock confidence must be >= this).
+    let presenceConfidenceThreshold: Float
 
-    // Motion candidate threshold (instantaneous)
-    var minMotionPxPerSec: Double = 400
+    /// Motion authority threshold (instantaneous px/s must be >= this).
+    let minMotionPxPerSec: Double
 
-    // Idle definition (used for arming)
-    var idleMotionMaxPxPerSec: Double = 50
-    var requiredIdleFramesToArm: Int = 8
+    /// Motion persistence required to authorize (>=2 frames).
+    let requiredMotionFrames: Int
 
-    // Authorization persistence requirement
-    var requiredMotionFrames: Int = 2
+    /// Context authority: required quiet/idle frames before arming.
+    let minIdleFramesToArm: Int
 
-    // Cooldown after authorization (context authority)
-    var cooldownSec: Double = 0.50
+    /// Context authority: cooldown after authorization.
+    let cooldownSec: Double
 
-    // Directional change proxy (approach → impact)
-    // This relies on motionPhase being provided by upstream code.
-    var requireApproachThenImpact: Bool = true
+    init(
+        presenceConfidenceThreshold: Float = 80.0,
+        minMotionPxPerSec: Double = 220.0,
+        requiredMotionFrames: Int = 2,
+        minIdleFramesToArm: Int = 12,
+        cooldownSec: Double = 0.75
+    ) {
+        self.presenceConfidenceThreshold = presenceConfidenceThreshold
+        self.minMotionPxPerSec = max(0, minMotionPxPerSec)
+        self.requiredMotionFrames = max(1, requiredMotionFrames)
+        self.minIdleFramesToArm = max(0, minIdleFramesToArm)
+        self.cooldownSec = max(0, cooldownSec)
+    }
+}
 
-    init() {}
+// MARK: - Input
+
+struct ShotAuthorityGateInput: Equatable {
+    let timestampSec: Double
+    let ballLockConfidence: Float
+    let clusterCompactness: Double?         // optional; pass nil if unavailable
+    let instantaneousPxPerSec: Double
+    let motionPhase: MotionDensityPhase     // observed, not derived here
+    let framesSinceIdle: Int                // MUST come from SceneQuietGate
+    let lifecycleState: ShotAuthorityLifecycleState
 }
 
 // MARK: - Gate
 
 final class ShotAuthorityGate {
 
-    // Exposed so DotTestCoordinator can use consistent thresholds
-    let config: ShotAuthorityConfig
+    private enum GateState: Equatable {
+        case notArmed(reason: String)
+        case armed
+    }
 
-    // Internal state
-    private var armed: Bool = false
-    private var lastDecision: ShotAuthorityDecision = .notArmed(reason: "boot")
+    private let config: ShotAuthorityGateConfig
 
+    private var state: GateState = .notArmed(reason: "boot")
     private var lastAuthorizedTimestampSec: Double? = nil
 
-    // Candidate tracking (motion persistence + direction proxy)
-    private var candidateMotionFrames: Int = 0
-    private var sawApproachInCandidate: Bool = false
+    private var motionFramesAboveThreshold: Int = 0
 
-    // Log spam guards
-    private var blockedLatchActive: Bool = false
-    private var lastBlockedReason: String? = nil
-    private var lastDisarmReason: String? = nil
+    // Spam guard: log blocked only once per arm cycle.
+    private var blockedLoggedThisCycle: Bool = false
 
-    init(config: ShotAuthorityConfig = ShotAuthorityConfig()) {
+    init(config: ShotAuthorityGateConfig = ShotAuthorityGateConfig()) {
         self.config = config
     }
 
-    // MARK: - Update
-
-    func update(_ input: ShotAuthorityInput) -> ShotAuthorityDecision {
-
-        // ------------------------------------------------------------
-        // Context authority: lifecycle must be idle to listen/start
-        // ------------------------------------------------------------
-
-        if input.lifecycleState != .idle {
-            disarmIfNeeded(reason: "lifecycle_not_idle(\(input.lifecycleState.rawValue))", input: input)
-            return setDecision(.notArmed(reason: "lifecycle_not_idle"))
-        }
-
-        // ------------------------------------------------------------
-        // Context authority: cooldown must elapse
-        // ------------------------------------------------------------
-
-        if let last = lastAuthorizedTimestampSec {
-            let dt = input.timestampSec - last
-            if dt < config.cooldownSec {
-                disarmIfNeeded(reason: "cooldown(\(fmt(dt))/\(fmt(config.cooldownSec))s)", input: input)
-                return setDecision(.notArmed(reason: "cooldown"))
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Arming logic: require stable idle window (motion-decayed scene)
-        // IMPORTANT: we do NOT require "no ball" to arm. A ball can be
-        // present and stationary; arming is about readiness to listen.
-        // ------------------------------------------------------------
-
-        let idleEnough =
-            input.framesSinceIdle >= max(1, config.requiredIdleFramesToArm) &&
-            input.instantaneousPxPerSec <= config.idleMotionMaxPxPerSec
-
-        if !armed {
-            if idleEnough {
-                arm(input: input)
-                return setDecision(.armed)
-            } else {
-                // Not armed, waiting for idle window; no per-frame logs.
-                return setDecision(.notArmed(reason: "waiting_for_idle"))
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Armed: evaluate motion candidate for authorization
-        // ------------------------------------------------------------
-
-        let presenceOk = input.ballLockConfidence >= config.presenceConfidenceThreshold
-
-        let motionCandidate = input.instantaneousPxPerSec >= config.minMotionPxPerSec
-
-        // Reset candidate + unblock latch when motion is not active
-        if !motionCandidate {
-            resetCandidate()
-            unblockLatchIfNeeded()
-            return setDecision(.armed)
-        }
-
-        // Track approach→impact proxy
-        if input.motionPhase == .approach {
-            sawApproachInCandidate = true
-        }
-
-        // If motion is present but ball presence is weak -> blocked
-        guard presenceOk else {
-            blockOnce(
-                reason: "motion_without_presence",
-                input: input
-            )
-            resetCandidate()
-            return setDecision(.armed)
-        }
-
-        // Direction proxy: require approach then impact (if enabled)
-        if config.requireApproachThenImpact {
-            if !sawApproachInCandidate {
-                // We are in motion but never saw approach
-                blockOnce(
-                    reason: "missing_approach_phase",
-                    input: input
-                )
-                resetCandidate()
-                return setDecision(.armed)
-            }
-            if input.motionPhase != .impact {
-                // We only authorize on impact phase in this mode
-                return setDecision(.armed)
-            }
-        }
-
-        // Motion persistence (>= 2 frames)
-        candidateMotionFrames += 1
-
-        if candidateMotionFrames < max(1, config.requiredMotionFrames) {
-            // Not enough persistence yet; no logs.
-            return setDecision(.armed)
-        }
-
-        // AUTHORIZED: disarm immediately + enter cooldown
-        authorize(input: input)
-        return setDecision(.authorized)
+    func reset() {
+        state = .notArmed(reason: "reset")
+        lastAuthorizedTimestampSec = nil
+        motionFramesAboveThreshold = 0
+        blockedLoggedThisCycle = false
     }
 
-    // MARK: - Internal transitions
+    func update(_ input: ShotAuthorityGateInput) -> ShotAuthorityDecision {
 
-    private func arm(input: ShotAuthorityInput) {
-        armed = true
-        resetCandidate()
-        unblockLatchIfNeeded()
+        // Context authority checks
+        let cooldownElapsed: Bool = {
+            guard let last = lastAuthorizedTimestampSec else { return true }
+            return (input.timestampSec - last) >= config.cooldownSec
+        }()
+
+        let idleEnough = input.framesSinceIdle >= config.minIdleFramesToArm
+        let lifecycleIdle = (input.lifecycleState == .idle)
+
+        // If lifecycle is in progress, we cannot arm or authorize.
+        if !lifecycleIdle {
+            disarmIfNeeded(reason: "lifecycle_in_progress", t: input.timestampSec)
+            return .notArmed(reason: "lifecycle_in_progress")
+        }
+
+        // Arm if eligible and currently not armed.
+        switch state {
+        case .notArmed:
+            if cooldownElapsed && idleEnough {
+                arm(t: input.timestampSec, idleFrames: input.framesSinceIdle)
+            }
+        case .armed:
+            break
+        }
+
+        // Authorization check
+        if case .armed = state {
+
+            let presenceOK = input.ballLockConfidence >= config.presenceConfidenceThreshold
+            let motionOK = input.instantaneousPxPerSec >= config.minMotionPxPerSec
+            let motionNonIdle = (input.motionPhase != .idle)
+
+            if presenceOK && motionOK && motionNonIdle {
+                motionFramesAboveThreshold += 1
+
+                if motionFramesAboveThreshold >= config.requiredMotionFrames {
+                    // Authorize exactly once, then disarm.
+                    lastAuthorizedTimestampSec = input.timestampSec
+                    motionFramesAboveThreshold = 0
+
+                    Log.info(
+                        .authority,
+                        "authorized " +
+                        "t=\(fmt(input.timestampSec)) " +
+                        "conf=\(fmt(input.ballLockConfidence)) " +
+                        "px_s=\(fmt(input.instantaneousPxPerSec)) " +
+                        "frames=\(config.requiredMotionFrames)"
+                    )
+
+                    disarm(reason: "authorized", t: input.timestampSec)
+                    return .authorized
+                }
+
+                // Still accumulating; no log.
+                return .armed
+            }
+
+            // If we were accumulating and motion dropped, treat as a blocked attempt (once).
+            if motionFramesAboveThreshold > 0 && !motionOK {
+                if !blockedLoggedThisCycle {
+                    blockedLoggedThisCycle = true
+                    Log.info(
+                        .authority,
+                        "blocked " +
+                        "t=\(fmt(input.timestampSec)) " +
+                        "reason=persistence_failed " +
+                        "frames=\(motionFramesAboveThreshold) " +
+                        "conf=\(fmt(input.ballLockConfidence)) " +
+                        "px_s=\(fmt(input.instantaneousPxPerSec))"
+                    )
+                }
+                motionFramesAboveThreshold = 0
+                return .armed
+            }
+
+            // If motion is strong but we're missing presence, log blocked once.
+            if motionOK && !presenceOK {
+                if !blockedLoggedThisCycle {
+                    blockedLoggedThisCycle = true
+                    Log.info(
+                        .authority,
+                        "blocked " +
+                        "t=\(fmt(input.timestampSec)) " +
+                        "reason=presence_low " +
+                        "conf=\(fmt(input.ballLockConfidence)) " +
+                        "thr=\(fmt(config.presenceConfidenceThreshold)) " +
+                        "px_s=\(fmt(input.instantaneousPxPerSec))"
+                    )
+                }
+                return .armed
+            }
+
+            return .armed
+        }
+
+        // Not armed: if motion is happening, log blocked once with reason.
+        let motionEvent = input.instantaneousPxPerSec >= config.minMotionPxPerSec
+        if motionEvent {
+            if case .notArmed(let reason) = state {
+                if !blockedLoggedThisCycle {
+                    blockedLoggedThisCycle = true
+                    Log.info(
+                        .authority,
+                        "blocked " +
+                        "t=\(fmt(input.timestampSec)) " +
+                        "reason=not_armed:\(reason) " +
+                        "idleFrames=\(input.framesSinceIdle) " +
+                        "cooldown=\(fmt(timeSinceLastAuthorized(now: input.timestampSec))) " +
+                        "conf=\(fmt(input.ballLockConfidence)) " +
+                        "px_s=\(fmt(input.instantaneousPxPerSec))"
+                    )
+                }
+            }
+        }
+
+        let reason: String = {
+            if !cooldownElapsed { return "cooldown" }
+            if !idleEnough { return "scene_not_quiet" }
+            return "not_armed"
+        }()
+
+        state = .notArmed(reason: reason)
+        return .notArmed(reason: reason)
+    }
+
+    // MARK: - Transitions
+
+    private func arm(t: Double, idleFrames: Int) {
+        state = .armed
+        blockedLoggedThisCycle = false
+        motionFramesAboveThreshold = 0
 
         Log.info(
             .authority,
             "armed " +
-            "t=\(fmt(input.timestampSec)) " +
-            "idleFrames=\(input.framesSinceIdle) " +
-            "v=\(fmt(input.instantaneousPxPerSec))"
+            "t=\(fmt(t)) " +
+            "idleFrames=\(idleFrames) " +
+            "cooldown=\(fmt(timeSinceLastAuthorized(now: t)))"
         )
     }
 
-    private func authorize(input: ShotAuthorityInput) {
-        armed = false
-        lastAuthorizedTimestampSec = input.timestampSec
-
-        // Prevent immediate re-triggering by clearing candidate state
-        resetCandidate()
-        unblockLatchIfNeeded()
-        lastDisarmReason = nil
-
-        Log.info(
-            .authority,
-            "authorized " +
-            "t=\(fmt(input.timestampSec)) " +
-            "conf=\(fmt(input.ballLockConfidence)) " +
-            "v=\(fmt(input.instantaneousPxPerSec)) " +
-            "motion=\(input.motionPhase.rawValue)"
-        )
-    }
-
-    private func disarmIfNeeded(reason: String, input: ShotAuthorityInput) {
-        guard armed else { return }
-        armed = false
-        resetCandidate()
-        unblockLatchIfNeeded()
-
-        if lastDisarmReason != reason {
-            lastDisarmReason = reason
-            Log.info(
-                .authority,
-                "disarmed " +
-                "t=\(fmt(input.timestampSec)) " +
-                "reason=\(reason)"
-            )
+    private func disarmIfNeeded(reason: String, t: Double) {
+        if case .armed = state {
+            disarm(reason: reason, t: t)
+        } else {
+            state = .notArmed(reason: reason)
         }
     }
 
-    private func blockOnce(reason: String, input: ShotAuthorityInput) {
-        // Only log once per candidate until motion drops below threshold.
-        if blockedLatchActive && lastBlockedReason == reason { return }
-
-        blockedLatchActive = true
-        lastBlockedReason = reason
+    private func disarm(reason: String, t: Double) {
+        state = .notArmed(reason: reason)
+        motionFramesAboveThreshold = 0
+        blockedLoggedThisCycle = false
 
         Log.info(
             .authority,
-            "blocked " +
-            "t=\(fmt(input.timestampSec)) " +
-            "reason=\(reason) " +
-            "conf=\(fmt(input.ballLockConfidence)) " +
-            "v=\(fmt(input.instantaneousPxPerSec)) " +
-            "motion=\(input.motionPhase.rawValue) " +
-            "idleFrames=\(input.framesSinceIdle)"
+            "disarmed " +
+            "t=\(fmt(t)) " +
+            "reason=\(reason)"
         )
     }
 
-    private func unblockLatchIfNeeded() {
-        blockedLatchActive = false
-        lastBlockedReason = nil
-    }
-
-    private func resetCandidate() {
-        candidateMotionFrames = 0
-        sawApproachInCandidate = false
-    }
-
-    // MARK: - Decision tracking
-
-    @discardableResult
-    private func setDecision(_ d: ShotAuthorityDecision) -> ShotAuthorityDecision {
-        lastDecision = d
-        return d
+    private func timeSinceLastAuthorized(now: Double) -> Double? {
+        guard let last = lastAuthorizedTimestampSec else { return nil }
+        return max(0, now - last)
     }
 
     // MARK: - Formatting
 
     private func fmt(_ v: Double) -> String { String(format: "%.3f", v) }
+    private func fmt(_ v: Double?) -> String {
+        guard let v else { return "n/a" }
+        return String(format: "%.3f", v)
+    }
     private func fmt(_ v: Float) -> String { String(format: "%.2f", v) }
 }

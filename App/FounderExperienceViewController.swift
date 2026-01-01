@@ -83,9 +83,6 @@ final class FounderExperienceViewController: UIViewController,
         DotTestMode.shared.isArmedForDetection = true
         DotTestMode.shared.founderTestModeEnabled = true
 
-        DotTestCoordinator.shared.previewView = previewView
-        DotTestCoordinator.shared.founderDelegate = self
-
         // MARK: - Camera
         camera.delegate = self
         camera.start()

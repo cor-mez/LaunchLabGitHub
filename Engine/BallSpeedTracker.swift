@@ -15,6 +15,8 @@ import CoreGraphics
 
 final class BallSpeedTracker {
 
+    // MARK: - Internal Sample
+
     private struct Sample {
         let position: CGPoint
         let timestampSec: Double
@@ -28,14 +30,19 @@ final class BallSpeedTracker {
         samples.removeAll()
     }
 
-    func ingest(position: CGPoint, timestampSec: Double) {
-        samples.append(Sample(position: position, timestampSec: timestampSec))
+    func ingest(
+        position: CGPoint,
+        timestampSec: Double
+    ) {
+        samples.append(
+            Sample(position: position, timestampSec: timestampSec)
+        )
     }
 
-    // MARK: - Instantaneous Motion
+    // MARK: - Instantaneous Motion (OBSERVATION ONLY)
 
     /// Pixel velocity between the last two samples.
-    /// Used ONLY for gating (shot detection).
+    /// Used for raw motion / impulse analysis only.
     var lastInstantaneousPxPerSec: Double? {
         guard samples.count >= 2 else { return nil }
 
@@ -47,14 +54,16 @@ final class BallSpeedTracker {
 
         let dx = b.position.x - a.position.x
         let dy = b.position.y - a.position.y
-        let distPx = hypot(dx, dy)
 
-        return distPx / dt
+        return hypot(dx, dy) / dt
     }
 
-    // MARK: - Final Speed Computation
+    // MARK: - Final Speed Computation (AGGREGATE)
 
-    func compute(pixelsPerMeter: Double) -> BallSpeedSample? {
+    func compute(
+        pixelsPerMeter: Double
+    ) -> BallSpeedSample? {
+
         guard samples.count >= 2 else { return nil }
         guard pixelsPerMeter > 0 else { return nil }
 

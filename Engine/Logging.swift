@@ -4,7 +4,7 @@
 //
 //  Centralized, phase-gated logging for the engine.
 //  All console output must route through this file.
-//  No direct print() calls elsewhere in the codebase.
+//  No direct print() calls elsewhere.
 //
 
 import Foundation
@@ -16,10 +16,10 @@ enum LogPhase: String {
     case render
     case detection
     case ballLock
-    case authority   // ✅ NEW: ShotAuthorityGate logs
     case shot
     case pose
     case rswindow
+    case authority
     case debug
 }
 
@@ -27,22 +27,19 @@ enum LogPhase: String {
 
 enum Log {
 
-    /// Enabled log phases.
-    /// Modify this set to control console verbosity globally.
+    /// Enabled phases. Adjust to control verbosity.
     static var enabled: Set<LogPhase> = [
-        .authority,   // ✅ required for this module
-        .shot         // keep if you want lifecycle logs visible
+        .shot,
+        .authority
         // .detection,
         // .ballLock,
+        // .debug,
         // .camera,
         // .render,
         // .pose,
         // .rswindow,
-        // .debug
     ]
 
-    /// Primary logging entry point.
-    /// Uses autoclosure to avoid string construction cost when disabled.
     @inline(__always)
     static func info(
         _ phase: LogPhase,
@@ -52,7 +49,6 @@ enum Log {
         Swift.print("[\(phase.rawValue.uppercased())] \(message())")
     }
 
-    /// Debug-only logging (guarded by DebugProbe + phase).
     @inline(__always)
     static func debug(
         _ phase: LogPhase,
