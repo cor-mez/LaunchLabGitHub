@@ -2,13 +2,12 @@
 //  DotTestCoordinator.swift
 //  LaunchLab
 //
-//  Central engine coordinator (V1.4)
+//  Central engine coordinator (V1.7)
 //
-//  Motion-first observation with explicit authority gating.
 //  Presence is strict.
-//  Motion must be valid before impact can exist.
-//  Motion is anchored + integrated before validation.
-//  Continuity is latched only on valid impact.
+//  Impact confirmation detects regime change.
+//  Ballistic motion validity runs ONLY post-impact.
+//  Motion is anchored + integrated before judgment.
 //
 
 import Foundation
@@ -28,15 +27,16 @@ final class DotTestCoordinator {
     let detector = MetalDetector.shared
     let ballLock = BallLockV0()
 
-    private let presenceGate     = PresenceAuthorityGate()
-    private let motionGate       = MotionValidityGate()
-    private let motionIntegrator = MotionAnchorIntegrator()
-    private let continuityLatch  = PresenceContinuityLatch()
-    private let kineticGate      = KineticEligibilityGate()
+    private let presenceGate      = PresenceAuthorityGate()
+    private let roiAnchor         = AnchoredROICenter()
+    private let motionIntegrator  = MotionAnchorIntegrator()
+    private let motionGate        = MotionValidityGate()
+    private let continuityLatch   = PresenceContinuityLatch()
+    private let kineticGate       = KineticEligibilityGate()
+    private let impactConfirmGate = ImpactConfirmationGate()
 
-    private let quietGate     = SceneQuietGate()
-    private let authorityGate = ShotAuthorityGate()
-    private let lifecycle     = ShotLifecycleController()
+    /// Inject this from camera setup
+    var cameraStabilityController: CameraStabilityController?
 
     private let rawMotionLogger       = RawMotionLogger()
     private let impactSignatureLogger = ImpactSignatureLogger()
@@ -52,7 +52,16 @@ final class DotTestCoordinator {
     internal(set) var lastROI: CGRect = .zero
     internal(set) var lastFull: CGSize = .zero
 
-    // MARK: - Motion Memory (pre-integration)
+    // MARK: - Motion Phase
+
+    private enum MotionPhase {
+        case idle
+        case postImpact
+    }
+
+    private var motionPhase: MotionPhase = .idle
+
+    // MARK: - Raw Motion Memory
 
     private var lastCenter: CGPoint?
     private var lastTimestampSec: Double?
@@ -67,6 +76,11 @@ final class DotTestCoordinator {
         guard frameIndex % detectionInterval == 0 else { return }
         guard mode.isArmedForDetection else { return }
 
+        // 🚫 Do nothing until optics are stable
+        if let cam = cameraStabilityController, !cam.isStable {
+            return
+        }
+
         let t = CMTimeGetSeconds(timestamp)
         let w = CVPixelBufferGetWidth(pb)
         let h = CVPixelBufferGetHeight(pb)
@@ -74,7 +88,7 @@ final class DotTestCoordinator {
 
         lastFull = CGSize(width: w, height: h)
 
-        let roiSize: CGFloat = 100
+        let roiSize: CGFloat = 200
         let roi = CGRect(
             x: lastFull.width  * 0.5 - roiSize * 0.5,
             y: lastFull.height * 0.5 - roiSize * 0.5,
@@ -99,11 +113,11 @@ final class DotTestCoordinator {
         let points = scored.map { $0.point }
 
         var confidence: Float = 0
-        var center: CGPoint?
+        var rawCenter: CGPoint?
 
         if let cluster = ballLock.findBallCluster(from: points) {
             confidence = Float(cluster.count)
-            center = cluster.center
+            rawCenter = cluster.center
 
             rawMotionLogger.log(
                 timestampSec: timestampSec,
@@ -117,108 +131,95 @@ final class DotTestCoordinator {
         }
 
         // --------------------------------------------------
-        // Instantaneous motion (for Presence only)
+        // Instantaneous motion (RAW)
         // --------------------------------------------------
 
         var instantaneousPxPerSec: Double = 0
 
-        if let c = center,
+        if let c = rawCenter,
            let lastC = lastCenter,
            let lastT = lastTimestampSec {
 
             let dt = timestampSec - lastT
             if dt > 0 {
-                let dx = Double(c.x - lastC.x)
-                let dy = Double(c.y - lastC.y)
-                instantaneousPxPerSec = hypot(dx, dy) / dt
+                instantaneousPxPerSec = hypot(
+                    Double(c.x - lastC.x),
+                    Double(c.y - lastC.y)
+                ) / dt
             }
         }
 
-        lastCenter = center
+        lastCenter = rawCenter
         lastTimestampSec = timestampSec
 
         // --------------------------------------------------
-        // Spatial Mask (Y-channel occupancy)
+        // Presence (strict)
         // --------------------------------------------------
 
         let spatialMask = computeSpatialMask(pb: pb, roi: roi)
-
-        // --------------------------------------------------
-        // Presence (strict, multi-signal)
-        // --------------------------------------------------
 
         let presenceDecision = presenceGate.update(
             PresenceAuthorityInput(
                 timestampSec: timestampSec,
                 ballLockConfidence: confidence,
-                center: center,
+                center: rawCenter,
                 speedPxPerSec: instantaneousPxPerSec,
                 spatialMask: spatialMask
             )
         )
 
-        let presenceOk = (presenceDecision == .present)
-
-        if presenceOk {
-            motionIntegrator.setAnchorIfNeeded(center)
-        } else {
-            motionIntegrator.reset()
-            motionGate.reset()
-            continuityLatch.reset()
-            kineticGate.reset()
-            impactSignatureLogger.reset()
-            separationObserver.reset()
-            activeSeparationROI = nil
+        guard presenceDecision == .present,
+              let detectedCenter = rawCenter else {
+            resetAllTransientState()
             return
         }
 
         // --------------------------------------------------
-        // Integrated motion (ANCHOR + INTEGRATE)
+        // Phase A — Impact confirmation
         // --------------------------------------------------
 
+        if motionPhase == .idle {
+
+            let confirmed = impactConfirmGate.update(
+                presenceOk: true,
+                center: detectedCenter,
+                instantaneousPxPerSec: instantaneousPxPerSec
+            )
+
+            if confirmed {
+                continuityLatch.latch()
+                motionGate.reset()
+                motionPhase = .postImpact
+            }
+
+            return
+        }
+
+        // --------------------------------------------------
+        // ROI anchoring + integration
+        // --------------------------------------------------
+
+        let anchoredCenter = roiAnchor.update(with: detectedCenter)
+        motionIntegrator.setAnchorIfNeeded(anchoredCenter)
+
         guard let integrated = motionIntegrator.update(
-            center: center,
+            center: anchoredCenter,
             timestampSec: timestampSec
         ) else {
             return
         }
 
         // --------------------------------------------------
-        // Motion validity (stable, integrated)
+        // Phase B — Ballistic validity
         // --------------------------------------------------
 
         let motionDecision = motionGate.update(
-            center: center,
+            center: anchoredCenter,
             velocityPx: integrated.direction,
             speedPxPerSec: integrated.speedPxPerSec
         )
 
-        guard motionDecision == .valid else {
-            Log.info(.shot, "PHASE motion_invalid reason=\(motionDecision)")
-            impactSignatureLogger.reset()
-            return
-        }
-
-        // --------------------------------------------------
-        // Impact signature (safe)
-        // --------------------------------------------------
-
-        let impactEvent = impactSignatureLogger.observe(
-            timestampSec: timestampSec,
-            instantaneousPxPerSec: integrated.speedPxPerSec,
-            velocityPx: integrated.direction,
-            presenceOk: presenceOk
-        )
-
-        if impactEvent != nil {
-            continuityLatch.latch()
-        }
-
-        continuityLatch.tick()
-
-        // --------------------------------------------------
-        // Kinetic eligibility
-        // --------------------------------------------------
+        guard motionDecision == .valid else { return }
 
         kineticGate.observe(
             speedPxPerSec: integrated.speedPxPerSec,
@@ -228,15 +229,11 @@ final class DotTestCoordinator {
         let separationAllowed =
             continuityLatch.isActive && kineticGate.isEligible
 
-        // --------------------------------------------------
-        // Separation observability
-        // --------------------------------------------------
-
         if separationAllowed,
            activeSeparationROI == nil {
 
             activeSeparationROI = SeparationAttentionROI.make(
-                impactCenter: center ?? .zero,
+                impactCenter: anchoredCenter,
                 direction: integrated.direction,
                 fullSize: lastFull
             )
@@ -248,7 +245,7 @@ final class DotTestCoordinator {
         if let roiB = activeSeparationROI, separationAllowed {
 
             let sep = separationObserver.observe(
-                center: center,
+                center: anchoredCenter,
                 velocityPx: integrated.direction,
                 expectedDirection: roiB.direction
             )
@@ -264,7 +261,7 @@ final class DotTestCoordinator {
         }
     }
 
-    // MARK: - Spatial Mask (Y Channel)
+    // MARK: - Spatial Mask
 
     private func computeSpatialMask(
         pb: CVPixelBuffer,
@@ -299,12 +296,15 @@ final class DotTestCoordinator {
 
     private func resetAllTransientState() {
         presenceGate.reset()
-        motionGate.reset()
+        roiAnchor.reset()
         motionIntegrator.reset()
+        motionGate.reset()
         continuityLatch.reset()
         kineticGate.reset()
+        impactConfirmGate.reset()
         impactSignatureLogger.reset()
         separationObserver.reset()
         activeSeparationROI = nil
+        motionPhase = .idle
     }
 }

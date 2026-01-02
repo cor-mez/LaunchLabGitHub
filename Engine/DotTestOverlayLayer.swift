@@ -67,8 +67,8 @@ final class DotTestOverlayLayer: CALayer {
         let sx = roiView.width  / roi.width
         let sy = roiView.height / roi.height
 
-        // 🔵 ROI CIRCLE (DEBUG)
-        drawROICircle(in: ctx, roiView: roiView)
+        // 🔲 ROI RECTANGLE (ENGINE TRUTH — DEBUG)
+        drawROIRect(in: ctx, roiView: roiView)
 
         drawMatches(in: ctx, rect: roiView, sx: sx, sy: sy)
         drawCPUOnly(in: ctx, rect: roiView, sx: sx, sy: sy)
@@ -76,30 +76,20 @@ final class DotTestOverlayLayer: CALayer {
         drawVectors(in: ctx, rect: roiView, sx: sx, sy: sy)
     }
 
-    // MARK: - ROI Circle -------------------------------------------------------
+    // MARK: - ROI Rectangle ---------------------------------------------------
 
-    private func drawROICircle(in ctx: CGContext, roiView: CGRect) {
-        let center = CGPoint(
-            x: roiView.midX,
-            y: roiView.midY
-        )
-
-        let radius = min(roiView.width, roiView.height) * 0.5
+    private func drawROIRect(in ctx: CGContext, roiView: CGRect) {
+        ctx.saveGState()
 
         ctx.setStrokeColor(UIColor.cyan.withAlphaComponent(0.9).cgColor)
         ctx.setLineWidth(2.0)
-        ctx.setLineDash(phase: 0, lengths: [6, 4]) // dashed = clearly debug
+        ctx.setLineDash(phase: 0, lengths: [6, 4]) // dashed = debug
 
-        ctx.strokeEllipse(
-            in: CGRect(
-                x: center.x - radius,
-                y: center.y - radius,
-                width: radius * 2,
-                height: radius * 2
-            )
-        )
+        ctx.addRect(roiView)
+        ctx.strokePath()
 
         ctx.setLineDash(phase: 0, lengths: []) // reset
+        ctx.restoreGState()
     }
 
     // MARK: - Corner Drawing ---------------------------------------------------

@@ -1,3 +1,12 @@
+//
+//  FounderOverlayLayer.swift
+//  LaunchLab
+//
+//  Renders the engine-truth ROI as a strict rectangle,
+//  plus minimal presence/status diagnostics.
+//  No circles. No rounding. No inference.
+//
+
 import UIKit
 
 @MainActor
@@ -14,20 +23,24 @@ final class FounderOverlayLayer: CALayer {
 
     override init() {
         super.init()
-        contentsScale = UIScreen.main.scale
-        isOpaque = false
-        masksToBounds = false
-        cornerRadius = 0          // 🔒 force rectangle
+        commonInit()
     }
 
     override init(layer: Any) {
         super.init(layer: layer)
-        cornerRadius = 0
+        commonInit()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        cornerRadius = 0
+        commonInit()
+    }
+
+    private func commonInit() {
+        contentsScale = UIScreen.main.scale
+        isOpaque = false
+        masksToBounds = false
+        cornerRadius = 0 // 🔒 enforce rectangle
     }
 
     // MARK: - Public API
@@ -47,6 +60,7 @@ final class FounderOverlayLayer: CALayer {
 
     // MARK: - Coordinate Mapping
 
+    /// Maps engine-space ROI into view-space using aspect-fit scaling.
     private func roiRectInView() -> CGRect {
         guard fullSize.width > 0, fullSize.height > 0 else { return .zero }
 
@@ -77,7 +91,7 @@ final class FounderOverlayLayer: CALayer {
 
         ctx.saveGState()
 
-        // 🔒 Explicit rectangle path — no rounding possible
+        // 🔒 Engine-truth ROI — rectangle only
         ctx.setLineWidth(2)
         ctx.setStrokeColor(UIColor.systemGreen.cgColor)
         ctx.setLineDash(phase: 0, lengths: [])
@@ -96,12 +110,12 @@ final class FounderOverlayLayer: CALayer {
         let label = ballLocked ? "LOCKED" : "UNLOCKED"
         let color: UIColor = ballLocked ? .systemGreen : .systemRed
 
-        let attrs: [NSAttributedString.Key: Any] = [
+        let textAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold),
             .foregroundColor: color
         ]
 
-        label.draw(at: CGPoint(x: 12, y: 12), withAttributes: attrs)
+        label.draw(at: CGPoint(x: 12, y: 12), withAttributes: textAttrs)
 
         let barWidth = bounds.width * 0.25
         let barHeight: CGFloat = 8
@@ -111,7 +125,7 @@ final class FounderOverlayLayer: CALayer {
         ctx.stroke(barRect)
 
         let clamped = max(0, min(confidence / 20.0, 1))
-        let fill = CGRect(
+        let fillRect = CGRect(
             x: barRect.minX,
             y: barRect.minY,
             width: barRect.width * CGFloat(clamped),
@@ -119,6 +133,6 @@ final class FounderOverlayLayer: CALayer {
         )
 
         ctx.setFillColor(color.withAlphaComponent(0.4).cgColor)
-        ctx.fill(fill)
+        ctx.fill(fillRect)
     }
 }
