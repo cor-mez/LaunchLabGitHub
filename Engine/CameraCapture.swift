@@ -2,6 +2,10 @@
 //  CameraCapture.swift
 //  LaunchLab
 //
+//  Camera capture + format configuration only.
+//  Optical regime (AE/AF/AWB) is locked exactly once,
+//  explicitly, after alignment is complete.
+//
 
 import AVFoundation
 import UIKit
@@ -16,14 +20,14 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let output  = AVCaptureVideoDataOutput()
     private var videoDevice: AVCaptureDevice?
 
-    /// DotTestViewController gets frames through this delegate
     weak var delegate: CameraFrameDelegate?
 
-    /// Delivery queue for frame output
     private let captureQueue = DispatchQueue(
         label: "camera.capture.queue",
         qos: .userInitiated
     )
+
+    private var cameraLocked = false
 
     // ---------------------------------------------------------------------
     // MARK: - Init
@@ -41,9 +45,8 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func configureSession() {
 
         session.beginConfiguration()
-        session.sessionPreset = .high   // DO NOT use this to control FPS
+        session.sessionPreset = .high
 
-        // Camera selection
         guard let camera = AVCaptureDevice.default(
             .builtInWideAngleCamera,
             for: .video,
@@ -64,7 +67,6 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             session.addInput(input)
         }
 
-        // Pixel format: REQUIRED for Y/CbCr Metal pipeline
         output.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String:
                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
@@ -94,42 +96,36 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         targetFPS: Double
     ) -> AVCaptureDevice.Format? {
 
-        let candidates: [(AVCaptureDevice.Format, AVFrameRateRange)] =
-            device.formats.compactMap { format in
-                for range in format.videoSupportedFrameRateRanges {
-                    if range.minFrameRate <= targetFPS &&
-                       targetFPS <= range.maxFrameRate {
-                        return (format, range)
-                    }
+        let candidates = device.formats.compactMap { format -> AVCaptureDevice.Format? in
+            for range in format.videoSupportedFrameRateRanges {
+                if range.minFrameRate <= targetFPS &&
+                   targetFPS <= range.maxFrameRate {
+                    return format
                 }
-                return nil
             }
+            return nil
+        }
 
-        // Prefer highest resolution format that supports the FPS
-        return candidates
-            .sorted { a, b in
-                let da = CMVideoFormatDescriptionGetDimensions(a.0.formatDescription)
-                let db = CMVideoFormatDescriptionGetDimensions(b.0.formatDescription)
-                return (da.width * da.height) > (db.width * db.height)
-            }
-            .first?
-            .0
+        return candidates.sorted {
+            let a = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
+            let b = CMVideoFormatDescriptionGetDimensions($1.formatDescription)
+            return (a.width * a.height) > (b.width * b.height)
+        }.first
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - Camera Locking (Measurement Mode)
+    // MARK: - EXPLICIT Camera Lock (Called Once)
     // ---------------------------------------------------------------------
 
-    func lockCameraForMeasurement(device: AVCaptureDevice) {
+    /// Call exactly once after alignment is complete.
+    func lockCameraForMeasurement() {
+        guard !cameraLocked, let device = videoDevice else { return }
 
         let desiredFPS: Double = 240
 
         do {
             try device.lockForConfiguration()
 
-            // ----------------------------
-            // Select a format that supports target FPS
-            // ----------------------------
             if let format = selectBestHighSpeedFormat(
                 device: device,
                 targetFPS: desiredFPS
@@ -141,56 +137,26 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 return
             }
 
-            // ----------------------------
-            // Focus
-            // ----------------------------
-            if device.isFocusModeSupported(.locked) {
-                device.focusMode = .continuousAutoFocus
-                device.focusMode = .locked
-            }
+            // Let auto modes settle BEFORE lock (caller ensures scene is stable)
+            device.focusMode = .continuousAutoFocus
+            device.exposureMode = .continuousAutoExposure
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
 
-            // ----------------------------
-            // Exposure
-            // ----------------------------
-            if device.isExposureModeSupported(.locked) {
-                device.exposureMode = .continuousAutoExposure
-                device.exposureMode = .locked
-            }
+            device.focusMode = .locked
+            device.exposureMode = .locked
+            device.whiteBalanceMode = .locked
 
-            // ----------------------------
-            // White Balance
-            // ----------------------------
-            if device.isWhiteBalanceModeSupported(.locked) {
-                device.whiteBalanceMode = .continuousAutoWhiteBalance
-                device.whiteBalanceMode = .locked
-            }
-
-            // ----------------------------
-            // Frame Rate
-            // ----------------------------
-            let duration = CMTime(
-                value: 1,
-                timescale: CMTimeScale(desiredFPS)
-            )
+            let duration = CMTime(value: 1, timescale: CMTimeScale(desiredFPS))
             device.activeVideoMinFrameDuration = duration
             device.activeVideoMaxFrameDuration = duration
 
             device.unlockForConfiguration()
+            cameraLocked = true
 
-            // ----------------------------
-            // Debug Log (capture-only)
-            // ----------------------------
-            if DebugProbe.isEnabled(.capture) {
-                Log.info(
-                    .camera,
-                    "locked fps=\(desiredFPS) " +
-                    "iso=\(String(format: "%.2f", device.iso)) " +
-                    "shutter=\(String(format: "%.5f", CMTimeGetSeconds(device.exposureDuration)))"
-                )
-            }
+            Log.info(.camera, "AE/AF/AWB locked @ \(desiredFPS) FPS")
 
         } catch {
-            Log.info(.camera, "lock failed: \(error)")
+            Log.info(.camera, "Camera lock failed: \(error)")
         }
     }
 
@@ -200,22 +166,13 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     func start() {
         guard !session.isRunning else { return }
-
-        captureQueue.async {
-            self.session.startRunning()
-
-            // Allow AF/AE to settle, then lock
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                if let device = self.videoDevice {
-                    self.lockCameraForMeasurement(device: device)
-                }
-            }
-        }
+        captureQueue.async { self.session.startRunning() }
     }
 
     func stop() {
         guard session.isRunning else { return }
         captureQueue.async { self.session.stopRunning() }
+        cameraLocked = false
     }
 
     // ---------------------------------------------------------------------
@@ -227,11 +184,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-
-        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
-        }
-
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         Task { @MainActor in

@@ -43,14 +43,17 @@ final class LaunchSeparationDetector {
         lastDirection = nil
     }
 
+    /// Observes whether ballistic separation emerges after an impact.
+    /// NOTE: This detector does NOT consume internal impact event types.
     func update(
-        impact: ImpactSignatureEvent?,   // ✅ FIXED TYPE
+        impactObserved: Bool,
+        impactCenter: CGPoint?,
         center: CGPoint?,
         velocityPx: CGVector?,
         speedPxPerSec: Double
     ) -> LaunchSeparationDecision {
 
-        guard impact != nil else {
+        guard impactObserved else {
             return .notSeparated(reason: .noImpact)
         }
 
@@ -62,8 +65,9 @@ final class LaunchSeparationDetector {
             return .notSeparated(reason: .noSpatialEscape)
         }
 
+        // Establish impact origin once
         if impactOrigin == nil {
-            impactOrigin = center
+            impactOrigin = impactCenter ?? center
             lastDirection = normalize(v)
             framesSinceImpact = 0
             return .notSeparated(reason: .noSpatialEscape)
@@ -97,6 +101,8 @@ final class LaunchSeparationDetector {
         lastDirection = dir
         return .separated
     }
+
+    // MARK: - Helpers
 
     private func normalize(_ v: CGVector) -> CGVector? {
         let mag = sqrt(v.dx * v.dx + v.dy * v.dy)

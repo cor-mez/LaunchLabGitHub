@@ -5,7 +5,6 @@
 import Foundation
 import Metal
 
-@MainActor
 final class Fast9Compute {
 
     private let device: MTLDevice

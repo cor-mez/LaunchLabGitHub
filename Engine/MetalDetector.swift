@@ -7,7 +7,6 @@ import Metal
 import CoreVideo
 import simd
 
-@MainActor
 final class MetalDetector {
     
     static let shared = MetalDetector()

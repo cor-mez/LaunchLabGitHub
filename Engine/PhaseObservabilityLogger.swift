@@ -27,14 +27,13 @@ final class PhaseObservabilityLogger {
     /// Prevent phase spam when conditions oscillate rapidly.
     private let emitCooldownSec: Double = 0.15
 
-    /// Conservative separation window: only label separation if ball is lost soon after an impact signature.
+    /// Conservative separation window: only label separation if ball is lost soon after impact.
     private let separationWindowSec: Double = 0.25
 
     // MARK: - State
 
     private var lastPhase: Phase?
     private var lastEmitTime: Double?
-
     private var lastImpactTime: Double?
 
     init() {}
@@ -45,6 +44,8 @@ final class PhaseObservabilityLogger {
         lastImpactTime = nil
     }
 
+    /// Observational-only phase inference.
+    /// NOTE: This logger does NOT consume authority objects or internal event types.
     func observe(
         timestampSec: Double,
         presenceOk: Bool,
@@ -53,39 +54,33 @@ final class PhaseObservabilityLogger {
         center: CGPoint?,
         instantaneousPxPerSec: Double,
         quietCandidateFrames: Int,
-        impactEvent: ImpactSignatureEvent?
+        impactObserved: Bool
     ) {
 
-        // Update impact memory first (used for separation inference).
-        if let impactEvent {
-            lastImpactTime = impactEvent.timestampSec
+        // Track impact timing for separation inference
+        if impactObserved {
+            lastImpactTime = timestampSec
         }
 
         let ballPresent = (center != nil)
         let quietCandidate = (quietCandidateFrames > 0)
 
-        // Conservative "separation": ball is lost shortly after impact.
         let separationNow: Bool = {
             guard let tImpact = lastImpactTime else { return false }
             let dt = timestampSec - tImpact
             guard dt >= 0, dt <= separationWindowSec else { return false }
-            // Separation only when we actually lose the ball.
             return !ballPresent
         }()
 
         let phaseNow: Phase = {
-            if impactEvent != nil { return .impactSignature }
-            if separationNow       { return .separation }
+            if impactObserved     { return .impactSignature }
+            if separationNow      { return .separation }
             if presenceOk {
-                // If quietGate thinks the scene is quiet enough to be a candidate,
-                // we call this "presence" (ball exists + stable baseline).
                 return quietCandidate ? .presence : .disturbance
             }
-            // When not present, we keep this coarse: "scene quiet / baseline".
             return .sceneQuiet
         }()
 
-        // Emit only on transitions (with cooldown).
         let cooledDown: Bool = {
             guard let last = lastEmitTime else { return true }
             return (timestampSec - last) >= emitCooldownSec
@@ -96,8 +91,6 @@ final class PhaseObservabilityLogger {
         lastPhase = phaseNow
         lastEmitTime = timestampSec
 
-        // Compose a readable, consistent log line.
-        // Keep it compact; don't duplicate other loggers’ details unless helpful.
         var msg = "PHASE \(phaseNow.rawValue) "
         msg += "t=\(fmt3(timestampSec)) "
         msg += "conf=\(fmt1(ballLockConfidence)) "
@@ -112,7 +105,6 @@ final class PhaseObservabilityLogger {
             }
 
         case .presence:
-            // Presence is stable baseline, not motion.
             msg += "presence=\(presenceOk)"
 
         case .disturbance:
@@ -122,19 +114,13 @@ final class PhaseObservabilityLogger {
             }
 
         case .impactSignature:
-            if let e = impactEvent {
-                msg += "v=\(fmt3(e.speedPxPerSec)) "
-                msg += "dv=\(fmt3(e.deltaSpeedPxPerSec)) "
-                msg += "dir_dot=\(fmt3(e.directionDot))"
-            }
+            msg += "witness=impact_signature"
 
         case .separation:
             if let tImpact = lastImpactTime {
-                let dt = timestampSec - tImpact
-                msg += "dt=\(fmt3(dt)) reason=ball_lost_after_impact"
-            } else {
-                msg += "reason=ball_lost_after_impact"
+                msg += "dt=\(fmt3(timestampSec - tImpact)) "
             }
+            msg += "reason=ball_lost_after_impact"
         }
 
         Log.info(.shot, msg)
