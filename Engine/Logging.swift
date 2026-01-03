@@ -2,10 +2,6 @@
 //  Logging.swift
 //  LaunchLab
 //
-//  Centralized, phase-gated logging for the engine.
-//  All console output must route through this file.
-//  No direct print() calls elsewhere.
-//
 
 import Foundation
 
@@ -17,6 +13,7 @@ enum LogPhase: String {
     case detection
     case ballLock
     case shot
+    case finalShot     // ✅ ADD THIS
     case pose
     case rswindow
     case authority
@@ -29,15 +26,16 @@ enum Log {
 
     /// Enabled phases. Adjust to control verbosity.
     static var enabled: Set<LogPhase> = [
-        .shot,
-        .authority
-        // .detection,
-        // .ballLock,
-        // .debug,
-        // .camera,
-        // .render,
-        // .pose,
-        // .rswindow,
+        .finalShot      // ✅ impulse authority
+        // .shot
+        // .authority
+        // .detection
+        // .ballLock
+        // .debug
+        // .camera
+        // .render
+        // .pose
+        // .rswindow
     ]
 
     @inline(__always)
