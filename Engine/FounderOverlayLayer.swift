@@ -2,9 +2,8 @@
 //  FounderOverlayLayer.swift
 //  LaunchLab
 //
-//  Renders the engine-truth ROI as a strict rectangle,
-//  plus minimal presence/status diagnostics.
-//  No circles. No rounding. No inference.
+//  Engine-truth ROI overlay.
+//  Safe CoreGraphics + UIKit interop.
 //
 
 import UIKit
@@ -40,7 +39,6 @@ final class FounderOverlayLayer: CALayer {
         contentsScale = UIScreen.main.scale
         isOpaque = false
         masksToBounds = false
-        cornerRadius = 0 // 🔒 enforce rectangle
     }
 
     // MARK: - Public API
@@ -60,7 +58,6 @@ final class FounderOverlayLayer: CALayer {
 
     // MARK: - Coordinate Mapping
 
-    /// Maps engine-space ROI into view-space using aspect-fit scaling.
     private func roiRectInView() -> CGRect {
         guard fullSize.width > 0, fullSize.height > 0 else { return .zero }
 
@@ -87,42 +84,48 @@ final class FounderOverlayLayer: CALayer {
     override func draw(in ctx: CGContext) {
         guard roi.width > 0, roi.height > 0 else { return }
 
+        // -------------------------------
+        // Geometry (pure CoreGraphics)
+        // -------------------------------
         let rect = roiRectInView()
 
         ctx.saveGState()
-
-        // 🔒 Engine-truth ROI — rectangle only
         ctx.setLineWidth(2)
-        ctx.setStrokeColor(UIColor.systemGreen.cgColor)
-        ctx.setLineDash(phase: 0, lengths: [])
-
+        ctx.setStrokeColor(
+            (ballLocked ? UIColor.systemGreen : UIColor.systemRed).cgColor
+        )
         ctx.addRect(rect)
         ctx.strokePath()
-
         ctx.restoreGState()
 
-        drawStatus(ctx)
+        // -------------------------------
+        // UIKit text + bars (requires push)
+        // -------------------------------
+        UIGraphicsPushContext(ctx)
+        drawStatusUIKit()
+        UIGraphicsPopContext()
     }
 
-    // MARK: - Status HUD
+    // MARK: - UIKit-safe HUD
 
-    private func drawStatus(_ ctx: CGContext) {
+    private func drawStatusUIKit() {
         let label = ballLocked ? "LOCKED" : "UNLOCKED"
         let color: UIColor = ballLocked ? .systemGreen : .systemRed
 
-        let textAttrs: [NSAttributedString.Key: Any] = [
+        let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold),
             .foregroundColor: color
         ]
 
-        label.draw(at: CGPoint(x: 12, y: 12), withAttributes: textAttrs)
+        label.draw(at: CGPoint(x: 12, y: 12), withAttributes: attrs)
 
-        let barWidth = bounds.width * 0.25
-        let barHeight: CGFloat = 8
-        let barRect = CGRect(x: 12, y: 34, width: barWidth, height: barHeight)
+        // Confidence bar
+        let barW = bounds.width * 0.25
+        let barH: CGFloat = 8
+        let barRect = CGRect(x: 12, y: 34, width: barW, height: barH)
 
-        ctx.setStrokeColor(UIColor.white.cgColor)
-        ctx.stroke(barRect)
+        UIColor.white.setStroke()
+        UIBezierPath(rect: barRect).stroke()
 
         let clamped = max(0, min(confidence / 20.0, 1))
         let fillRect = CGRect(
@@ -132,7 +135,7 @@ final class FounderOverlayLayer: CALayer {
             height: barRect.height
         )
 
-        ctx.setFillColor(color.withAlphaComponent(0.4).cgColor)
-        ctx.fill(fillRect)
+        color.withAlphaComponent(0.4).setFill()
+        UIBezierPath(rect: fillRect).fill()
     }
 }

@@ -59,23 +59,4 @@ final class CameraPreviewView: UIView {
             layer.setNeedsDisplay()
         }
     }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-
-        // Ensure overlay frames update on main thread
-        if Thread.isMainThread {
-            for o in overlays {
-                o.frame = bounds
-                o.setNeedsDisplay()
-            }
-        } else {
-            DispatchQueue.main.async {
-                for o in self.overlays {
-                    o.frame = self.bounds
-                    o.setNeedsDisplay()
-                }
-            }
-        }
-    }
 }

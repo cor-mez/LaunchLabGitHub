@@ -5,37 +5,17 @@
 
 import Foundation
 
-// MARK: - Log Phases
-
 enum LogPhase: String {
-    case camera
-    case render
-    case detection
-    case ballLock
     case shot
-    case finalShot     // ✅ ADD THIS
-    case pose
-    case rswindow
+    case detection
     case authority
-    case debug
+    case camera
 }
-
-// MARK: - Logger
 
 enum Log {
 
-    /// Enabled phases. Adjust to control verbosity.
     static var enabled: Set<LogPhase> = [
-        .finalShot      // ✅ impulse authority
-        // .shot
-        // .authority
-        // .detection
-        // .ballLock
-        // .debug
-        // .camera
-        // .render
-        // .pose
-        // .rswindow
+        .detection
     ]
 
     @inline(__always)
@@ -45,15 +25,5 @@ enum Log {
     ) {
         guard enabled.contains(phase) else { return }
         Swift.print("[\(phase.rawValue.uppercased())] \(message())")
-    }
-
-    @inline(__always)
-    static func debug(
-        _ phase: LogPhase,
-        _ message: @autoclosure () -> String
-    ) {
-        guard DebugProbe.isEnabled(.capture) else { return }
-        guard enabled.contains(phase) else { return }
-        Swift.print("[\(phase.rawValue.uppercased())][DEBUG] \(message())")
     }
 }

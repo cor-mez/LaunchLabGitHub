@@ -14,7 +14,7 @@ final class VisionPipeline {
     private let lkRefiner = PyrLKRefiner()
     private let velocityTracker = VelocityTracker()
 
-    private let ballLock = BallLockV0()
+    private let ballLock = BallLockV5()
 
     private var rsWindowBuilder = RSWindow()
     private let rspnpSolver = RSPnPBridgeV1()

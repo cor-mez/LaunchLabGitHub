@@ -2,57 +2,51 @@
 //  ImpactImpulseAuthority.swift
 //  LaunchLab
 //
-//  Impulse-Based Impact Authority
+//  Impulse-Based Impact Authority (OBSERVED → AUTHORITATIVE)
 //
 
 import CoreGraphics
 
 final class ImpactImpulseAuthority {
 
-    // MARK: - Tunables (conservative)
-
-    private let minDeltaSpeedPxPerSec: Double = 1200.0
+    // Tunables (conservative)
+    private let minDeltaSpeedPxPerSec: Double = 900.0
     private let maxImpulseFrames: Int = 2
 
-    // MARK: - State
-
+    // State
     private var lastSpeed: Double?
-    private var impulseFramesRemaining: Int = 0
+    private var framesRemaining: Int = 0
     private var fired: Bool = false
-
-    // MARK: - Reset
 
     func reset() {
         lastSpeed = nil
-        impulseFramesRemaining = 0
+        framesRemaining = 0
         fired = false
     }
 
-    // MARK: - Update
+    func arm() {
+        framesRemaining = maxImpulseFrames
+        fired = false
+    }
 
-    /// Returns true exactly once when an impulse is observed
+    /// Returns true exactly once
     func update(speedPxPerSec: Double) -> Bool {
-
         defer { lastSpeed = speedPxPerSec }
 
-        guard !fired else { return false }
-
-        guard let prev = lastSpeed else {
+        guard !fired,
+              framesRemaining > 0,
+              let prev = lastSpeed
+        else {
+            framesRemaining = max(framesRemaining - 1, 0)
             return false
         }
 
         let delta = speedPxPerSec - prev
+        framesRemaining -= 1
 
         if delta >= minDeltaSpeedPxPerSec {
-            impulseFramesRemaining = maxImpulseFrames
             fired = true
-
-            Log.info(.finalShot, "[SHOT] impulse_detected Δv=\(Int(delta))px/s")
             return true
-        }
-
-        if impulseFramesRemaining > 0 {
-            impulseFramesRemaining -= 1
         }
 
         return false

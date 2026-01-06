@@ -2,9 +2,10 @@
 //  DotTestCoordinator.swift
 //  LaunchLab
 //
-//  Impulse-First Shot Authority (STABLE)
+//  Rolling-Shutter Measurement Harness v4
 //
-//  Presence → Impact Impulse → Shot
+//  NO DETECTION. NO AUTHORITY.
+//  RS OBSERVABILITY ONLY.
 //
 
 import CoreMedia
@@ -15,137 +16,153 @@ final class DotTestCoordinator {
 
     static let shared = DotTestCoordinator()
 
-    // Core
-    let detector = MetalDetector.shared
-    let ballLock = BallLockV0()
+    private let detector = MetalDetector.shared
+    private let rsProbe = RollingShutterProbe()
+    private let rsFilter = RSGatedPointFilter()
+    private let stats = RollingShutterSessionStats()
 
-    // Gates
-    private let presenceGate = PresenceAuthorityGate()
-    private let impactLogger = ImpactSignatureLogger()
+    // Overlay only
+    private(set) var debugROI: CGRect = .zero
+    private(set) var debugFullSize: CGSize = .zero
+    private(set) var debugBallLocked: Bool = false
+    private(set) var debugConfidence: Float = 0
 
-    // Impulse authority
-    private var lastSpeed: Double = 0
-    private var impulseFrames: Int = 0
-    private let minImpulseDelta: Double = 120.0   // px/s jump (tune later)
-    private let requiredImpulseFrames: Int = 1
-
-    // State
-    private var lastCenter: CGPoint?
-    private var lastTimestamp: Double?
+    // Harness controls
+    var baselineModeEnabled: Bool = true
+    private let minBaselineFrames: Int = 60
+    private let eventZThreshold: Double = 4.0
 
     private let detectionInterval = 2
     private var frameIndex = 0
 
     private init() {}
 
-    // MARK: - Entry Point (BACKGROUND ONLY)
+    func resetBaseline() {
+        stats.resetBaseline()
+        baselineModeEnabled = true
+        Log.info(.detection, "rs baseline reset")
+    }
 
     func processFrame(_ pb: CVPixelBuffer, timestamp: CMTime) {
 
         frameIndex += 1
         guard frameIndex % detectionInterval == 0 else { return }
 
-        let t = CMTimeGetSeconds(timestamp)
         let w = CVPixelBufferGetWidth(pb)
         let h = CVPixelBufferGetHeight(pb)
-        guard w > 32, h > 32 else { return }
+        guard w > 64, h > 64 else { return }
 
         let roi = CGRect(
-            x: CGFloat(w) * 0.5 - 100,
-            y: CGFloat(h) * 0.5 - 100,
-            width: 200,
-            height: 200
+            x: CGFloat(w) * 0.5 - 120,
+            y: CGFloat(h) * 0.5 - 120,
+            width: 240,
+            height: 240
         ).integral
 
-        detect(pb, roi: roi, time: t)
-    }
+        debugROI = roi
+        debugFullSize = CGSize(width: w, height: h)
+        debugBallLocked = false
+        debugConfidence = 0
 
-    // MARK: - Detection
+        detector.prepareFrameY(
+            pb,
+            roi: roi,
+            srScale: 1.0
+        ) { [weak self] in
+            guard let self else { return }
 
-    private func detect(
-        _ pb: CVPixelBuffer,
-        roi: CGRect,
-        time: Double
-    ) {
+            self.detector.gpuFast9ScoredCornersY { metalPoints in
 
-        detector.prepareFrameY(pb, roi: roi, srScale: 1.0)
-        let points = detector.gpuFast9ScoredCornersY().map { $0.point }
+                // Metal → CGPoint (ONLY type boundary)
+                let rawPoints: [CGPoint] = metalPoints.map { $0.point }
 
-        guard let cluster = ballLock.findBallCluster(from: points) else {
-            resetImpulse()
-            return
-        }
+                // RS geometric filter
+                let filtPoints: [CGPoint] = self.rsFilter.filter(points: rawPoints)
 
-        let center = cluster.center
+                guard let rs = self.rsProbe.evaluate(
+                    points: filtPoints,
+                    roi: roi
+                ) else {
+                    Log.info(
+                        .detection,
+                        "rs=no_signal raw=\(rawPoints.count) filt=\(filtPoints.count)"
+                    )
+                    return
+                }
 
-        var speed: Double = 0
-        if let lastC = lastCenter, let lastT = lastTimestamp {
-            let dt = time - lastT
-            if dt > 0 {
-                let dx = center.x - lastC.x
-                let dy = center.y - lastC.y
-                speed = hypot(dx, dy) / dt
+                let sample = RSFeatureSample(
+                    slope: rs.rowSlope,
+                    r2: rs.rowSlopeR2,
+                    nonu: rs.rowNonuniformity,
+                    lw: rs.streakLW,
+                    edge: rs.edgeStraightness,
+                    rawCount: Double(rawPoints.count),
+                    filtCount: Double(filtPoints.count)
+                )
+
+                // Baseline collection
+                if self.baselineModeEnabled {
+                    self.stats.addBaseline(sample)
+
+                    if self.stats.hasBaseline(minCount: self.minBaselineFrames) {
+                        self.baselineModeEnabled = false
+                        Log.info(
+                            .detection,
+                            "rs baseline locked | \(self.stats.baselineSummary())"
+                        )
+                    }
+                }
+
+                // Z-score logging
+                if let z = self.stats.zScores(for: sample) {
+
+                    Log.info(
+                        .detection,
+                        String(
+                            format:
+                            "rs slope=%.4f r2=%.2f nonu=%.2f lw=%.2f edge=%.2f raw=%d filt=%d | zmax=%.2f",
+                            sample.slope,
+                            sample.r2,
+                            sample.nonu,
+                            sample.lw,
+                            sample.edge,
+                            Int(sample.rawCount),
+                            Int(sample.filtCount),
+                            z.maxAbs
+                        )
+                    )
+
+                    if z.maxAbs >= self.eventZThreshold {
+                        Log.info(
+                            .detection,
+                            String(
+                                format:
+                                "rs EVENT_CAND zmax=%.2f raw=%d filt=%d",
+                                z.maxAbs,
+                                Int(sample.rawCount),
+                                Int(sample.filtCount)
+                            )
+                        )
+                    }
+
+                } else {
+                    Log.info(
+                        .detection,
+                        String(
+                            format:
+                            "rs slope=%.4f r2=%.2f nonu=%.2f lw=%.2f edge=%.2f raw=%d filt=%d | baseline n=%d",
+                            sample.slope,
+                            sample.r2,
+                            sample.nonu,
+                            sample.lw,
+                            sample.edge,
+                            Int(sample.rawCount),
+                            Int(sample.filtCount),
+                            self.stats.baselineCount
+                        )
+                    )
+                }
             }
         }
-
-        lastCenter = center
-        lastTimestamp = time
-
-        let presence = presenceGate.update(
-            PresenceAuthorityInput(
-                timestampSec: time,
-                ballLockConfidence: Float(cluster.count),
-                center: center,
-                speedPxPerSec: speed,
-                spatialMask: []
-            )
-        )
-
-        guard presence == .present else {
-            resetImpulse()
-            return
-        }
-
-        // -------------------------
-        // IMPULSE AUTHORITY
-        // -------------------------
-
-        let delta = speed - lastSpeed
-        lastSpeed = speed
-
-        if delta >= minImpulseDelta {
-            impulseFrames += 1
-        } else {
-            impulseFrames = 0
-        }
-
-        if impulseFrames >= requiredImpulseFrames {
-            Log.info(
-                .finalShot,
-                "IMPULSE Δv=\(Int(delta))px/s speed=\(Int(speed))px/s"
-            )
-            finalizeShot()
-        }
-    }
-
-    // MARK: - Finalize
-
-    private func finalizeShot() {
-        Log.info(.finalShot, "SHOT CONFIRMED")
-        resetAll()
-    }
-
-    // MARK: - Reset
-
-    private func resetImpulse() {
-        lastSpeed = 0
-        impulseFrames = 0
-    }
-
-    private func resetAll() {
-        lastCenter = nil
-        lastTimestamp = nil
-        resetImpulse()
-        impactLogger.reset()
     }
 }

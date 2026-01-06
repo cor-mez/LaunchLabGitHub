@@ -2,8 +2,10 @@
 //  DotTestViewController.swift
 //  LaunchLab
 //
-//  Log-only detection view.
-//  No overlays. No ROI visualization.
+//  Camera preview + minimal ROI overlay box.
+//  No text overlays. No confidence bars.
+//  Detection can run wherever you currently run it.
+//  Overlay is driven only by (debugROI, debugFullSize).
 //
 
 import UIKit
@@ -21,6 +23,8 @@ final class DotTestViewController: UIViewController {
         frame: .zero,
         device: MetalRenderer.shared.device
     )
+
+    private let roiOverlay = ROIRectOverlayLayer()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -40,11 +44,20 @@ final class DotTestViewController: UIViewController {
         view.layoutIfNeeded()
         previewView.drawableSize = previewView.bounds.size
 
+        // Add ROI overlay on top of preview
+        roiOverlay.frame = previewView.bounds
+        previewView.layer.addSublayer(roiOverlay)
+
         DotTestMode.shared.previewEnabled = true
         DotTestMode.shared.isArmedForDetection = true
 
         camera.delegate = self
         camera.start()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        roiOverlay.frame = previewView.bounds
     }
 }
 
@@ -56,9 +69,7 @@ extension DotTestViewController: CameraFrameDelegate {
 
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
 
-        // ---------------------------------------------------------
-        // Detection (BACKGROUND ONLY — NEVER MainActor)
-        // ---------------------------------------------------------
+        // Detection (keep whatever threading you currently use)
         DetectionQueue.shared.async {
             DotTestCoordinator.shared.processFrame(
                 pixelBuffer,
@@ -66,19 +77,20 @@ extension DotTestViewController: CameraFrameDelegate {
             )
         }
 
-        // ---------------------------------------------------------
-        // UI Rendering (throttled, MainActor-safe)
-        // ---------------------------------------------------------
+        // UI render (throttled)
         let now = CACurrentMediaTime()
         guard now - lastUIUpdateTime >= (1.0 / 60.0) else { return }
         lastUIUpdateTime = now
 
         let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
+        previewView.render(texture: yTex, isR8: true, forceSolidColor: false)
 
-        previewView.render(
-            texture: yTex,
-            isR8: true,
-            forceSolidColor: false
+        // ROI overlay (geometry only)
+        let c = DotTestCoordinator.shared
+        roiOverlay.update(
+            roi: c.debugROI,
+            fullSize: c.debugFullSize,
+            in: previewView.bounds
         )
     }
 }

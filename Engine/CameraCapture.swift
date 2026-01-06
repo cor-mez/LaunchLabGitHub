@@ -2,9 +2,10 @@
 //  CameraCapture.swift
 //  LaunchLab
 //
-//  Camera capture + format configuration only.
-//  Optical regime (AE/AF/AWB) is locked exactly once,
-//  explicitly, after alignment is complete.
+//  Deterministic high-speed capture for RS metrology.
+//  No detection logic.
+//  No UI assumptions.
+//  Physics-first configuration.
 //
 
 import AVFoundation
@@ -45,7 +46,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func configureSession() {
 
         session.beginConfiguration()
-        session.sessionPreset = .high
+
+        // Do NOT use ambiguous presets for RS work
+        session.sessionPreset = .inputPriority
 
         guard let camera = AVCaptureDevice.default(
             .builtInWideAngleCamera,
@@ -80,8 +83,15 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
 
         if let conn = output.connection(with: .video) {
-            conn.videoOrientation = .portrait
+
+            // CRITICAL: RS physics prefers landscape geometry
+            conn.videoOrientation = .landscapeRight
             conn.isVideoMirrored = false
+
+            // Disable stabilization if present
+            if conn.isVideoStabilizationSupported {
+                conn.preferredVideoStabilizationMode = .off
+            }
         }
 
         session.commitConfiguration()
@@ -114,11 +124,13 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - EXPLICIT Camera Lock (Called Once)
+    // MARK: - Explicit Camera Lock (Call Once)
     // ---------------------------------------------------------------------
 
     /// Call exactly once after alignment is complete.
+    /// Sets deterministic timing + exposure for RS measurement.
     func lockCameraForMeasurement() {
+
         guard !cameraLocked, let device = videoDevice else { return }
 
         let desiredFPS: Double = 240
@@ -126,34 +138,57 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         do {
             try device.lockForConfiguration()
 
-            if let format = selectBestHighSpeedFormat(
+            guard let format = selectBestHighSpeedFormat(
                 device: device,
                 targetFPS: desiredFPS
-            ) {
-                device.activeFormat = format
-            } else {
+            ) else {
                 Log.info(.camera, "No format supports \(desiredFPS) FPS")
                 device.unlockForConfiguration()
                 return
             }
 
-            // Let auto modes settle BEFORE lock (caller ensures scene is stable)
-            device.focusMode = .continuousAutoFocus
-            device.exposureMode = .continuousAutoExposure
-            device.whiteBalanceMode = .continuousAutoWhiteBalance
+            device.activeFormat = format
 
-            device.focusMode = .locked
-            device.exposureMode = .locked
-            device.whiteBalanceMode = .locked
+            let frameDuration = CMTime(value: 1, timescale: CMTimeScale(desiredFPS))
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
 
-            let duration = CMTime(value: 1, timescale: CMTimeScale(desiredFPS))
-            device.activeVideoMinFrameDuration = duration
-            device.activeVideoMaxFrameDuration = duration
+            // -------------------------------
+            // STREAK-FRIENDLY EXPOSURE REGIME
+            // -------------------------------
+
+            // ~1/720 sec exposure as a starting point
+            let exposureDuration = CMTime(value: 1, timescale: 720)
+
+            let iso = min(
+                max(device.activeFormat.minISO, 200),
+                device.activeFormat.maxISO
+            )
+
+            if device.isExposureModeSupported(.custom) {
+                device.setExposureModeCustom(
+                    duration: exposureDuration,
+                    iso: iso,
+                    completionHandler: nil
+                )
+            }
+
+            // Lock focus & WB after exposure is set
+            if device.isFocusModeSupported(.locked) {
+                device.focusMode = .locked
+            }
+
+            if device.isWhiteBalanceModeSupported(.locked) {
+                device.whiteBalanceMode = .locked
+            }
 
             device.unlockForConfiguration()
             cameraLocked = true
 
-            Log.info(.camera, "AE/AF/AWB locked @ \(desiredFPS) FPS")
+            Log.info(
+                .camera,
+                "Camera locked: \(desiredFPS) fps, landscape, exp=\(exposureDuration.seconds)s ISO=\(iso)"
+            )
 
         } catch {
             Log.info(.camera, "Camera lock failed: \(error)")
