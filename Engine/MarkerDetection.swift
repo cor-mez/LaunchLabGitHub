@@ -1,8 +1,12 @@
 //
 //  MarkerDetection.swift
-//  LaunchLabGitHub
-//
-//  Created by Home Computer on 1/7/26.
+//  LaunchLab
 //
 
-import Foundation
+import CoreGraphics
+
+struct MarkerDetection {
+    let center: CGPoint
+    let sizePx: CGFloat
+    let confidence: CGFloat
+}

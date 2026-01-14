@@ -2,10 +2,11 @@
 //  CameraCapture.swift
 //  LaunchLab
 //
-//  Deterministic high-speed capture for RS metrology.
-//  No detection logic.
-//  No UI assumptions.
-//  Physics-first configuration.
+//  Camera capture + format configuration only.
+//  Optical regime (AE/AF/AWB) is locked exactly once,
+//  explicitly, after alignment is complete.
+//
+//  This version introduces an explicit STREAK exposure regime.
 //
 
 import AVFoundation
@@ -46,9 +47,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func configureSession() {
 
         session.beginConfiguration()
-
-        // Do NOT use ambiguous presets for RS work
-        session.sessionPreset = .inputPriority
+        session.sessionPreset = .high
 
         guard let camera = AVCaptureDevice.default(
             .builtInWideAngleCamera,
@@ -83,15 +82,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
 
         if let conn = output.connection(with: .video) {
-
-            // CRITICAL: RS physics prefers landscape geometry
+            // IMPORTANT: landscape right = rows aligned with launch
             conn.videoOrientation = .landscapeRight
             conn.isVideoMirrored = false
-
-            // Disable stabilization if present
-            if conn.isVideoStabilizationSupported {
-                conn.preferredVideoStabilizationMode = .off
-            }
         }
 
         session.commitConfiguration()
@@ -124,70 +117,63 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - Explicit Camera Lock (Call Once)
+    // MARK: - EXPLICIT Camera Lock (STREAK REGIME)
     // ---------------------------------------------------------------------
 
     /// Call exactly once after alignment is complete.
-    /// Sets deterministic timing + exposure for RS measurement.
     func lockCameraForMeasurement() {
-
         guard !cameraLocked, let device = videoDevice else { return }
 
         let desiredFPS: Double = 240
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(desiredFPS))
+
+        // STREAK REGIME:
+        // ~2.5x frame duration → visible blur but not full washout
+        let exposureDuration = CMTime(
+            value: frameDuration.value * 5 / 2,
+            timescale: frameDuration.timescale
+        )
+
+        // Conservative ISO ceiling to avoid ISP gain weirdness
+        let maxISO = min(device.activeFormat.maxISO, 800)
 
         do {
             try device.lockForConfiguration()
 
-            guard let format = selectBestHighSpeedFormat(
+            // 1) Select true 240 FPS format
+            if let format = selectBestHighSpeedFormat(
                 device: device,
                 targetFPS: desiredFPS
-            ) else {
+            ) {
+                device.activeFormat = format
+            } else {
                 Log.info(.camera, "No format supports \(desiredFPS) FPS")
                 device.unlockForConfiguration()
                 return
             }
 
-            device.activeFormat = format
-
-            let frameDuration = CMTime(value: 1, timescale: CMTimeScale(desiredFPS))
+            // 2) Set deterministic frame timing
             device.activeVideoMinFrameDuration = frameDuration
             device.activeVideoMaxFrameDuration = frameDuration
 
-            // -------------------------------
-            // STREAK-FRIENDLY EXPOSURE REGIME
-            // -------------------------------
-
-            // ~1/720 sec exposure as a starting point
-            let exposureDuration = CMTime(value: 1, timescale: 720)
-
-            let iso = min(
-                max(device.activeFormat.minISO, 200),
-                device.activeFormat.maxISO
+            // 3) Explicit STREAK exposure
+            device.setExposureModeCustom(
+                duration: exposureDuration,
+                iso: maxISO,
+                completionHandler: nil
             )
 
-            if device.isExposureModeSupported(.custom) {
-                device.setExposureModeCustom(
-                    duration: exposureDuration,
-                    iso: iso,
-                    completionHandler: nil
-                )
-            }
-
-            // Lock focus & WB after exposure is set
-            if device.isFocusModeSupported(.locked) {
-                device.focusMode = .locked
-            }
-
-            if device.isWhiteBalanceModeSupported(.locked) {
-                device.whiteBalanceMode = .locked
-            }
+            // 4) Lock everything down
+            device.focusMode = .locked
+            device.exposureMode = .locked
+            device.whiteBalanceMode = .locked
 
             device.unlockForConfiguration()
             cameraLocked = true
 
             Log.info(
                 .camera,
-                "Camera locked: \(desiredFPS) fps, landscape, exp=\(exposureDuration.seconds)s ISO=\(iso)"
+                "Locked @ \(desiredFPS) FPS | streak exp = \(CMTimeGetSeconds(exposureDuration))s | ISO ≤ \(maxISO)"
             )
 
         } catch {
@@ -227,3 +213,4 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 }
+

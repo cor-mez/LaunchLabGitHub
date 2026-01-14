@@ -1,8 +1,9 @@
 //
 //  RSResult.swift
-//  LaunchLabGitHub
-//
-//  Created by Home Computer on 1/13/26.
+//  LaunchLab
 //
 
-import Foundation
+struct RSResult {
+    let zmax: Float
+    let isCandidate: Bool
+}

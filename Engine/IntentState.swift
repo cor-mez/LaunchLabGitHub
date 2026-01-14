@@ -1,8 +1,13 @@
 //
 //  IntentState.swift
-//  LaunchLabGitHub
+//  LaunchLab
 //
-//  Created by Home Computer on 1/10/26.
+//  Explicit intent authority with timestamped transitions
 //
 
-import Foundation
+enum IntentState {
+    case idle
+    case candidate(startTime: Double)
+    case active(startTime: Double)
+    case decay(startTime: Double)
+}

@@ -55,8 +55,8 @@ final class DotTestCoordinator {
         let roi = CGRect(
             x: CGFloat(w) * 0.5 - 120,
             y: CGFloat(h) * 0.5 - 120,
-            width: 240,
-            height: 240
+            width: 200,
+            height: 200
         ).integral
 
         debugROI = roi

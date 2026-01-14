@@ -1,6 +1,9 @@
 //
-//  MarkerDetectorV0.swift
+//  MarkerDetectorV1.swift
 //  LaunchLab
+//
+//  MarkerDetector V1
+//  Diamond marker detection via connected component + covariance geometry gate
 //
 
 import Foundation
@@ -8,17 +11,22 @@ import CoreVideo
 import CoreGraphics
 import Accelerate
 
-final class MarkerDetectorV0 {
+final class MarkerDetectorV1 {
 
     // ---------------------------------------------------------------------
-    // Tunable parameters (V0 locked)
+    // Tunables (LOCKED FOR V1)
     // ---------------------------------------------------------------------
 
-    private let minAreaPx: CGFloat = 80        // reject speckle
-    private let maxAreaPx: CGFloat = 4000      // reject turf blobs
-    private let minAspectRatio: CGFloat = 0.7 // diamond tolerance
-    private let maxAspectRatio: CGFloat = 1.3
-    private let minEdgeEnergy: Float = 12.0
+    private let minAreaPx: Int = 80
+    private let maxAreaPx: Int = 4000
+
+    // Geometry gate
+    private let minIsotropy: CGFloat = 0.55     // λ2 / λ1
+    private let maxIsotropy: CGFloat = 1.80     // λ1 / λ2
+    private let angleToleranceDeg: CGFloat = 20 // ± degrees around 45°
+
+    // Black marker threshold (Y plane)
+    private let blackThreshold: UInt8 = 90
 
     // ---------------------------------------------------------------------
     // Public API
@@ -36,8 +44,6 @@ final class MarkerDetectorV0 {
             return nil
         }
 
-        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
-        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
         let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
 
         let roiX = Int(roi.origin.x)
@@ -45,102 +51,137 @@ final class MarkerDetectorV0 {
         let roiW = Int(roi.width)
         let roiH = Int(roi.height)
 
+        // -----------------------------------------------------------------
+        // 1. Binary mask (black marker in Y plane)
+        // -----------------------------------------------------------------
+
         var mask = [UInt8](repeating: 0, count: roiW * roiH)
 
-        // -----------------------------------------------------------------
-        // 1. Simple luminance threshold (black marker)
-        // -----------------------------------------------------------------
-
-        let threshold: UInt8 = 90
-
         for y in 0..<roiH {
-            let rowPtr = yBase.advanced(by: (roiY + y) * bytesPerRow + roiX)
+            let rowPtr = yBase
+                .advanced(by: (roiY + y) * bytesPerRow + roiX)
                 .assumingMemoryBound(to: UInt8.self)
 
             for x in 0..<roiW {
-                let v = rowPtr[x]
-                mask[y * roiW + x] = v < threshold ? 255 : 0
+                mask[y * roiW + x] = rowPtr[x] < blackThreshold ? 255 : 0
             }
         }
 
         // -----------------------------------------------------------------
-        // 2. Connected component (single-pass flood)
+        // 2. Largest connected component
         // -----------------------------------------------------------------
 
         var visited = mask
-        var bestBlob: (area: Int, minX: Int, maxX: Int, minY: Int, maxY: Int)?
-        let directions = [(-1,0),(1,0),(0,-1),(0,1)]
+        var best: [CGPoint] = []
+
+        let neighbors = [(-1,0),(1,0),(0,-1),(0,1)]
 
         for y in 0..<roiH {
             for x in 0..<roiW {
                 let idx = y * roiW + x
                 if visited[idx] == 255 {
 
-                    var stack = [(x,y)]
+                    var stack = [(x, y)]
                     visited[idx] = 0
+                    var pixels: [CGPoint] = []
 
-                    var area = 0
-                    var minX = x, maxX = x
-                    var minY = y, maxY = y
+                    while let (cx, cy) = stack.popLast() {
+                        pixels.append(CGPoint(x: CGFloat(cx), y: CGFloat(cy)))
 
-                    while let (cx,cy) = stack.popLast() {
-                        area += 1
-                        minX = min(minX, cx)
-                        maxX = max(maxX, cx)
-                        minY = min(minY, cy)
-                        maxY = max(maxY, cy)
-
-                        for (dx,dy) in directions {
+                        for (dx, dy) in neighbors {
                             let nx = cx + dx
                             let ny = cy + dy
                             if nx >= 0 && nx < roiW && ny >= 0 && ny < roiH {
                                 let nidx = ny * roiW + nx
                                 if visited[nidx] == 255 {
                                     visited[nidx] = 0
-                                    stack.append((nx,ny))
+                                    stack.append((nx, ny))
                                 }
                             }
                         }
                     }
 
-                    if area > Int(minAreaPx) && area < Int(maxAreaPx) {
-                        if bestBlob == nil || area > bestBlob!.area {
-                            bestBlob = (area, minX, maxX, minY, maxY)
+                    if pixels.count >= minAreaPx && pixels.count <= maxAreaPx {
+                        if pixels.count > best.count {
+                            best = pixels
                         }
                     }
                 }
             }
         }
 
-        guard let blob = bestBlob else {
+        guard !best.isEmpty else { return nil }
+
+        // -----------------------------------------------------------------
+        // 3. Covariance geometry gate (diamond test)
+        // -----------------------------------------------------------------
+
+        let n = CGFloat(best.count)
+
+        var meanX: CGFloat = 0
+        var meanY: CGFloat = 0
+        for p in best {
+            meanX += p.x
+            meanY += p.y
+        }
+        meanX /= n
+        meanY /= n
+
+        var cxx: CGFloat = 0
+        var cyy: CGFloat = 0
+        var cxy: CGFloat = 0
+
+        for p in best {
+            let dx = p.x - meanX
+            let dy = p.y - meanY
+            cxx += dx * dx
+            cyy += dy * dy
+            cxy += dx * dy
+        }
+
+        cxx /= n
+        cyy /= n
+        cxy /= n
+
+        let trace = cxx + cyy
+        let det = cxx * cyy - cxy * cxy
+        let disc = max(trace * trace / 4 - det, 0)
+
+        let lambda1 = trace / 2 + sqrt(disc)
+        let lambda2 = trace / 2 - sqrt(disc)
+
+        guard lambda1 > 0, lambda2 > 0 else { return nil }
+
+        let isotropy = lambda2 / lambda1
+        guard isotropy >= minIsotropy && (1 / isotropy) <= maxIsotropy else {
             return nil
         }
 
-        // -----------------------------------------------------------------
-        // 3. Geometry sanity checks (diamond-ish)
-        // -----------------------------------------------------------------
+        let angleRad = 0.5 * atan2(2 * cxy, cxx - cyy)
+        let angleDeg = abs(angleRad * 180 / .pi)
 
-        let w = CGFloat(blob.maxX - blob.minX + 1)
-        let h = CGFloat(blob.maxY - blob.minY + 1)
-        let aspect = w / h
+        let isDiamond =
+            abs(angleDeg - 45) <= angleToleranceDeg ||
+            abs(angleDeg - 135) <= angleToleranceDeg
 
-        guard aspect > minAspectRatio && aspect < maxAspectRatio else {
-            return nil
-        }
+        guard isDiamond else { return nil }
 
         // -----------------------------------------------------------------
         // 4. Output
         // -----------------------------------------------------------------
 
         let center = CGPoint(
-            x: roi.origin.x + CGFloat(blob.minX) + w * 0.5,
-            y: roi.origin.y + CGFloat(blob.minY) + h * 0.5
+            x: roi.origin.x + meanX,
+            y: roi.origin.y + meanY
         )
 
-        let confidence = min(CGFloat(1.0), CGFloat(blob.area) / 400.0)
+        let sizePx: CGFloat = (lambda1 + lambda2).squareRoot()
+
+        let confidence: CGFloat = min(1.0, CGFloat(best.count) / 300.0)
+
         return MarkerDetection(
             center: center,
-            sizePx: max(w,h),
+            sizePx: sizePx,
             confidence: confidence
         )
     }

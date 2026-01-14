@@ -2,17 +2,30 @@
 //  RefusalReason.swift
 //  LaunchLab
 //
-//  Canonical refusal reasons (V1)
+//  Enumerates all refusal causes.
+//  Refusals are final, truthful outcomes.
 //
 
-import Foundation
+enum RefusalReason {
 
-enum RefusalReason: String {
-    case none
-    case mdgRevoked
+    // -----------------------------------------------------------------
+    // MARK: - Signal / Detection Refusals
+    // -----------------------------------------------------------------
+
     case insufficientConfidence
-    case trackingLost
-    case invalidMotion
-    case timeout
-    case unknown
+    case insufficientMotion
+    case markerLost
+    case ambiguousDetection
+
+    // -----------------------------------------------------------------
+    // MARK: - Lifecycle / Mechanical Refusals
+    // -----------------------------------------------------------------
+
+    /// Lifecycle exceeded maximum allowed duration
+    /// (deadman absolute timeout)
+    case lifecycleTimeout
+
+    /// Impact observed but no valid separation within time window
+    /// (occlusion, ROI exit, skipped phase)
+    case postImpactTimeout
 }
