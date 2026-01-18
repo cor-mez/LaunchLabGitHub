@@ -2,8 +2,9 @@
 //  VisionPipeline.swift
 //  LaunchLab
 //
-//  V1.7: Centroid-authoritative pipeline with
-//  RS emission gate + ShotLock + Lifecycle Deadman Guard
+//  V1.8: RS-impulse-first sensing pipeline
+//  Intent = arming only
+//  RS impulse = shot detection
 //
 
 import Foundation
@@ -24,21 +25,8 @@ final class VisionPipeline {
     // MARK: - State
     // ---------------------------------------------------------------------
 
-    private var frameIndex: Int = 0
-    private var lastFrameWidth: Int = 0
-    private var lastFrameHeight: Int = 0
-    private var lastIntrinsics: (Float, Float, Float, Float)?
-
-    // Intent + centroid authority
     private var intentState: IntentState = .idle
     private var centroidHistory: [CGPoint] = []
-
-    // Shot authority
-    private var shotLock = ShotLock()
-
-    // Lifecycle + safety
-    private var lifecycleState: ShotLifecycleState = .idle
-    private let deadman = LifecycleDeadmanGuard()
 
     // ---------------------------------------------------------------------
     // MARK: - Tunables (LOCKED FOR V1)
@@ -49,25 +37,13 @@ final class VisionPipeline {
     private let minIntentFrames: Int = 3
     private let decayFrames: Int = 6
 
-    // RS temporal alignment window
-    private let rsAlignmentWindow: Double = 0.030 // 30 ms
-
     // ---------------------------------------------------------------------
     // MARK: - Reset
     // ---------------------------------------------------------------------
 
     func reset() {
-        frameIndex = 0
-        lastFrameWidth = 0
-        lastFrameHeight = 0
-        lastIntrinsics = nil
-
         centroidHistory.removeAll()
         intentState = .idle
-        lifecycleState = .idle
-
-        shotLock.reset()
-        deadman.reset()
         rsDetector.reset()
     }
 
@@ -84,27 +60,6 @@ final class VisionPipeline {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        let intrTuple = (
-            intrinsics.fx,
-            intrinsics.fy,
-            intrinsics.cx,
-            intrinsics.cy
-        )
-
-        // Reset if geometry changes
-        if lastFrameWidth != 0 {
-            if width != lastFrameWidth ||
-               height != lastFrameHeight ||
-               lastIntrinsics.map({ $0 != intrTuple }) ?? false {
-                reset()
-            }
-        }
-
-        lastFrameWidth = width
-        lastFrameHeight = height
-        lastIntrinsics = intrTuple
-        frameIndex &+= 1
-
         // -----------------------------------------------------------------
         // ROI (LOCKED)
         // -----------------------------------------------------------------
@@ -118,7 +73,7 @@ final class VisionPipeline {
         )
 
         // -----------------------------------------------------------------
-        // Marker Detection (Authoritative)
+        // Marker Presence (NOT motion authority)
         // -----------------------------------------------------------------
 
         let marker = markerDetector.detect(
@@ -131,7 +86,7 @@ final class VisionPipeline {
         } else {
             centroidHistory.removeAll()
             intentState = .idle
-            shotLock.reset()
+            rsDetector.disarm(reason: "marker_lost")
         }
 
         if centroidHistory.count > motionWindow {
@@ -139,57 +94,38 @@ final class VisionPipeline {
         }
 
         // -----------------------------------------------------------------
-        // Intent State Evaluation
+        // Intent Evaluation (ARMING ONLY)
         // -----------------------------------------------------------------
 
         evaluateIntentState(at: timestamp)
 
-        // -----------------------------------------------------------------
-        // Lifecycle Deadman Guard (MECHANICAL SAFETY)
-        // -----------------------------------------------------------------
-
-        let deadmanOutcome = deadman.update(
-            lifecycleState: lifecycleState,
-            timestamp: timestamp
-        )
-
-        switch deadmanOutcome {
-
-        case .forceRefuse(let reason):
-            print("[DEADMAN_REFUSE] \(reason)")
-            lifecycleState = .idle
-            shotLock.reset()
-            deadman.reset()
-
-        case .forceReset(let reason):
-            print("[DEADMAN_RESET] \(reason)")
-            reset()
-
-        case .none:
+        // Arm RS detector only when intent is active or decaying
+        switch intentState {
+        case .active, .decay:
+            rsDetector.arm()
+        default:
             break
         }
 
         // -----------------------------------------------------------------
-        // RS Emission + Shot Lock (unchanged authority)
+        // RS Impulse Detection (SINGLE-SHOT)
         // -----------------------------------------------------------------
 
-        if isRSEmissionAuthorized(at: timestamp),
-           !shotLock.isLocked {
+        let rsResult = rsDetector.analyze(
+            pixelBuffer: pixelBuffer,
+            roi: roiRect,
+            timestamp: timestamp
+        )
 
-            _ = rsDetector.analyze(
-                pixelBuffer: pixelBuffer,
-                roi: roiRect,
-                timestamp: timestamp
+        if rsResult.isImpulse {
+            Log.info(
+                .shot,
+                String(
+                    format: "shot_detected t=%.3f zmax=%.2f",
+                    timestamp,
+                    Double(rsResult.zmax)
+                )
             )
-
-            if shotLock.tryLock(
-                timestamp: timestamp,
-                zmax: 0.0   // RS remains non-authoritative
-            ) {
-                print(String(format: "[SHOT_COMMIT] t=%.4f", timestamp))
-                lifecycleState = .idle
-                deadman.reset()
-            }
         }
 
         // -----------------------------------------------------------------
@@ -216,7 +152,7 @@ final class VisionPipeline {
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - Intent State Machine
+    // MARK: - Intent State Machine (ARMING ONLY)
     // ---------------------------------------------------------------------
 
     private func evaluateIntentState(at timestamp: Double) {
@@ -241,16 +177,13 @@ final class VisionPipeline {
         case .idle:
             if movingFrames >= minIntentFrames {
                 intentState = .candidate(startTime: timestamp)
-                lifecycleState = .preImpact
             }
 
         case .candidate:
             if movingFrames >= minIntentFrames {
                 intentState = .active(startTime: timestamp)
-                lifecycleState = .impactObserved
             } else {
                 intentState = .idle
-                lifecycleState = .idle
             }
 
         case .active:
@@ -263,30 +196,8 @@ final class VisionPipeline {
                 intentState = .active(startTime: timestamp)
             } else if centroidHistory.count >= decayFrames {
                 intentState = .idle
-                lifecycleState = .idle
-                shotLock.reset()
-                deadman.reset()
-                rsDetector.reset()
+                rsDetector.disarm(reason: "intent_decay_complete")
             }
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // MARK: - RS Emission Authorization
-    // ---------------------------------------------------------------------
-
-    private func isRSEmissionAuthorized(at timestamp: Double) -> Bool {
-
-        switch intentState {
-
-        case .active(let startTime):
-            return timestamp >= startTime
-
-        case .decay(let startTime):
-            return (timestamp - startTime) <= rsAlignmentWindow
-
-        default:
-            return false
         }
     }
 }

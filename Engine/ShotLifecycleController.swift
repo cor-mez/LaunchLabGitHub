@@ -88,6 +88,29 @@ final class ShotLifecycleController {
 
     func update(_ input: ShotLifecycleInput) -> ShotLifecycleRecord? {
 
+        // ---------------------------------------------------------------
+        // Forced refusal path (MECHANICAL)
+        // If any upstream guard provides a refusalReason, we terminate now.
+        // ---------------------------------------------------------------
+        if let forcedReason = input.refusalReason {
+            // If we are already terminal, do nothing.
+            if state == .shotFinalized || state == .refused {
+                return nil
+            }
+
+            // If we haven't started a shot yet, startTimestamp should still be meaningful for logs/records.
+            if startTimestamp == nil {
+                startTimestamp = input.timestampSec
+                balllockConfidenceAtStart = input.ballLockConfidence
+            }
+
+            Log.info(
+                .shot,
+                "shot_force_refuse t=\(fmt(input.timestampSec)) reason=\(String(describing: forcedReason))"
+            )
+            return refuse(using: input, reason: forcedReason)
+        }
+
         recordMotionPhase(input.motionDensityPhase)
 
         // Accumulate peak speed only after impact
@@ -152,7 +175,8 @@ final class ShotLifecycleController {
 
                     Log.info(
                         .shot,
-                        "shot_refused reason=insufficient_speed peak_px_s=\(peakBallSpeedPxPerSec ?? 0)"
+                        "shot_refused t=\(fmt(input.timestampSec)) " +
+                        "reason=insufficient_speed peak_px_s=\(peakBallSpeedPxPerSec.map { fmt($0) } ?? "n/a")"
                     )
                     return refuse(using: input, reason: .insufficientConfidence)
                 }
@@ -213,10 +237,20 @@ final class ShotLifecycleController {
         let from = state
         state = newState
 
-        Log.info(
-            .shot,
-            "shot_state_transition t=\(fmt(input.timestampSec)) from=\(from.rawValue) to=\(newState.rawValue)"
-        )
+        if let rr = refusalReason {
+            Log.info(
+                .shot,
+                "shot_state_transition t=\(fmt(input.timestampSec)) " +
+                "from=\(from.rawValue) to=\(newState.rawValue) " +
+                "reason=\(String(describing: rr))"
+            )
+        } else {
+            Log.info(
+                .shot,
+                "shot_state_transition t=\(fmt(input.timestampSec)) " +
+                "from=\(from.rawValue) to=\(newState.rawValue)"
+            )
+        }
     }
 
     // MARK: - Record Assembly

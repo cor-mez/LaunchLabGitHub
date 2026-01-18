@@ -54,7 +54,7 @@ final class LifecycleDeadmanGuard {
         timestamp: TimeInterval
     ) -> DeadmanOutcome {
 
-        // Idle state clears the guard
+        // Idle clears guard completely
         if lifecycleState == .idle {
             reset()
             return .none
@@ -63,27 +63,47 @@ final class LifecycleDeadmanGuard {
         // First entry into non-idle lifecycle
         if lifecycleStartTime == nil {
             lifecycleStartTime = timestamp
+            Log.info(.shot, "deadman_armed t=\(fmt(timestamp))")
         }
 
         // Track first impact observation
         if lifecycleState == .impactObserved, impactTime == nil {
             impactTime = timestamp
+            Log.info(.shot, "deadman_postimpact_armed t=\(fmt(timestamp))")
         }
 
         // Absolute lifecycle timeout
         if let start = lifecycleStartTime {
-            if timestamp - start > maxLifecycleDuration {
-                return .forceRefuse(reason: .lifecycleTimeout)
+            let elapsed = timestamp - start
+            if elapsed > maxLifecycleDuration {
+                Log.info(
+                    .shot,
+                    "deadman_force_refuse reason=lifecycle_timeout elapsed=\(fmt(elapsed))"
+                )
+                return .forceRefuse(reason: .insufficientConfidence)
             }
         }
 
         // Post-impact timeout (separation skipped, occlusion, ROI exit)
         if let impact = impactTime {
-            if timestamp - impact > maxPostImpactDuration {
-                return .forceRefuse(reason: .postImpactTimeout)
+            let elapsed = timestamp - impact
+            if elapsed > maxPostImpactDuration {
+                Log.info(
+                    .shot,
+                    "deadman_force_refuse reason=postimpact_timeout elapsed=\(fmt(elapsed))"
+                )
+                return .forceRefuse(reason: .insufficientConfidence)
             }
         }
 
         return .none
+    }
+
+    // ---------------------------------------------------------------------
+    // MARK: - Formatting
+    // ---------------------------------------------------------------------
+
+    private func fmt(_ v: Double) -> String {
+        String(format: "%.3f", v)
     }
 }

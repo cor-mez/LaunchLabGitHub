@@ -31,19 +31,10 @@ enum ShotAuthorityLifecycleState: String, Equatable {
 
 struct ShotAuthorityGateConfig: Equatable {
 
-    /// Presence authority threshold (BallLock confidence must be >= this).
     let presenceConfidenceThreshold: Float
-
-    /// Motion authority threshold (instantaneous px/s must be >= this).
     let minMotionPxPerSec: Double
-
-    /// Motion persistence required to authorize (>=2 frames).
     let requiredMotionFrames: Int
-
-    /// Context authority: required quiet/idle frames before arming.
     let minIdleFramesToArm: Int
-
-    /// Context authority: cooldown after authorization.
     let cooldownSec: Double
 
     init(
@@ -66,10 +57,10 @@ struct ShotAuthorityGateConfig: Equatable {
 struct ShotAuthorityGateInput: Equatable {
     let timestampSec: Double
     let ballLockConfidence: Float
-    let clusterCompactness: Double?         // optional; pass nil if unavailable
+    let clusterCompactness: Double?
     let instantaneousPxPerSec: Double
-    let motionPhase: MotionDensityPhase     // observed, not derived here
-    let framesSinceIdle: Int                // MUST come from SceneQuietGate
+    let motionPhase: MotionDensityPhase
+    let framesSinceIdle: Int
     let lifecycleState: ShotAuthorityLifecycleState
 }
 
@@ -85,11 +76,9 @@ final class ShotAuthorityGate {
     private let config: ShotAuthorityGateConfig
 
     private var state: GateState = .notArmed(reason: "boot")
-    private var lastAuthorizedTimestampSec: Double? = nil
+    private var lastAuthorizedTimestampSec: Double?
 
     private var motionFramesAboveThreshold: Int = 0
-
-    // Spam guard: log blocked only once per arm cycle.
     private var blockedLoggedThisCycle: Bool = false
 
     init(config: ShotAuthorityGateConfig = ShotAuthorityGateConfig()) {
@@ -105,7 +94,6 @@ final class ShotAuthorityGate {
 
     func update(_ input: ShotAuthorityGateInput) -> ShotAuthorityDecision {
 
-        // Context authority checks
         let cooldownElapsed: Bool = {
             guard let last = lastAuthorizedTimestampSec else { return true }
             return (input.timestampSec - last) >= config.cooldownSec
@@ -114,13 +102,11 @@ final class ShotAuthorityGate {
         let idleEnough = input.framesSinceIdle >= config.minIdleFramesToArm
         let lifecycleIdle = (input.lifecycleState == .idle)
 
-        // If lifecycle is in progress, we cannot arm or authorize.
         if !lifecycleIdle {
             disarmIfNeeded(reason: "lifecycle_in_progress", t: input.timestampSec)
             return .notArmed(reason: "lifecycle_in_progress")
         }
 
-        // Arm if eligible and currently not armed.
         switch state {
         case .notArmed:
             if cooldownElapsed && idleEnough {
@@ -130,7 +116,6 @@ final class ShotAuthorityGate {
             break
         }
 
-        // Authorization check
         if case .armed = state {
 
             let presenceOK = input.ballLockConfidence >= config.presenceConfidenceThreshold
@@ -141,93 +126,36 @@ final class ShotAuthorityGate {
                 motionFramesAboveThreshold += 1
 
                 if motionFramesAboveThreshold >= config.requiredMotionFrames {
-                    // Authorize exactly once, then disarm.
                     lastAuthorizedTimestampSec = input.timestampSec
                     motionFramesAboveThreshold = 0
 
                     Log.info(
                         .authority,
-                        "authorized " +
-                        "t=\(fmt(input.timestampSec)) " +
-                        "conf=\(fmt(input.ballLockConfidence)) " +
-                        "px_s=\(fmt(input.instantaneousPxPerSec)) " +
-                        "frames=\(config.requiredMotionFrames)"
+                        "authorized t=\(fmt(input.timestampSec)) conf=\(fmt(input.ballLockConfidence)) px_s=\(fmt(input.instantaneousPxPerSec))"
                     )
 
                     disarm(reason: "authorized", t: input.timestampSec)
                     return .authorized
                 }
 
-                // Still accumulating; no log.
                 return .armed
             }
 
-            // If we were accumulating and motion dropped, treat as a blocked attempt (once).
             if motionFramesAboveThreshold > 0 && !motionOK {
                 if !blockedLoggedThisCycle {
                     blockedLoggedThisCycle = true
                     Log.info(
                         .authority,
-                        "blocked " +
-                        "t=\(fmt(input.timestampSec)) " +
-                        "reason=persistence_failed " +
-                        "frames=\(motionFramesAboveThreshold) " +
-                        "conf=\(fmt(input.ballLockConfidence)) " +
-                        "px_s=\(fmt(input.instantaneousPxPerSec))"
+                        "blocked reason=persistence_failed frames=\(motionFramesAboveThreshold)"
                     )
                 }
                 motionFramesAboveThreshold = 0
-                return .armed
-            }
-
-            // If motion is strong but we're missing presence, log blocked once.
-            if motionOK && !presenceOK {
-                if !blockedLoggedThisCycle {
-                    blockedLoggedThisCycle = true
-                    Log.info(
-                        .authority,
-                        "blocked " +
-                        "t=\(fmt(input.timestampSec)) " +
-                        "reason=presence_low " +
-                        "conf=\(fmt(input.ballLockConfidence)) " +
-                        "thr=\(fmt(config.presenceConfidenceThreshold)) " +
-                        "px_s=\(fmt(input.instantaneousPxPerSec))"
-                    )
-                }
-                return .armed
             }
 
             return .armed
         }
 
-        // Not armed: if motion is happening, log blocked once with reason.
-        let motionEvent = input.instantaneousPxPerSec >= config.minMotionPxPerSec
-        if motionEvent {
-            if case .notArmed(let reason) = state {
-                if !blockedLoggedThisCycle {
-                    blockedLoggedThisCycle = true
-                    Log.info(
-                        .authority,
-                        "blocked " +
-                        "t=\(fmt(input.timestampSec)) " +
-                        "reason=not_armed:\(reason) " +
-                        "idleFrames=\(input.framesSinceIdle) " +
-                        "cooldown=\(fmt(timeSinceLastAuthorized(now: input.timestampSec))) " +
-                        "conf=\(fmt(input.ballLockConfidence)) " +
-                        "px_s=\(fmt(input.instantaneousPxPerSec))"
-                    )
-                }
-            }
-        }
-
-        let reason: String = {
-            if !cooldownElapsed { return "cooldown" }
-            if !idleEnough { return "scene_not_quiet" }
-            return "not_armed"
-        }()
-
-        state = .notArmed(reason: reason)
-        return .notArmed(reason: reason)
+        return .notArmed(reason: "not_armed")
     }
 
     // MARK: - Transitions
@@ -239,10 +167,7 @@ final class ShotAuthorityGate {
 
         Log.info(
             .authority,
-            "armed " +
-            "t=\(fmt(t)) " +
-            "idleFrames=\(idleFrames) " +
-            "cooldown=\(fmt(timeSinceLastAuthorized(now: t)))"
+            "armed t=\(fmt(t)) idleFrames=\(idleFrames)"
         )
     }
 
@@ -261,23 +186,12 @@ final class ShotAuthorityGate {
 
         Log.info(
             .authority,
-            "disarmed " +
-            "t=\(fmt(t)) " +
-            "reason=\(reason)"
+            "disarmed t=\(fmt(t)) reason=\(reason)"
         )
-    }
-
-    private func timeSinceLastAuthorized(now: Double) -> Double? {
-        guard let last = lastAuthorizedTimestampSec else { return nil }
-        return max(0, now - last)
     }
 
     // MARK: - Formatting
 
     private func fmt(_ v: Double) -> String { String(format: "%.3f", v) }
-    private func fmt(_ v: Double?) -> String {
-        guard let v else { return "n/a" }
-        return String(format: "%.3f", v)
-    }
     private func fmt(_ v: Float) -> String { String(format: "%.2f", v) }
 }
