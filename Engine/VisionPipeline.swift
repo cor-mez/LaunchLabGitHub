@@ -2,54 +2,67 @@
 //  VisionPipeline.swift
 //  LaunchLab
 //
-//  V1.8: RS-impulse-first sensing pipeline
-//  Intent = arming only
-//  RS impulse = shot detection
+//  Path A — RS derivative impulse → ball emergence
+//  FULL OBSERVABILITY BUILD
 //
 
 import Foundation
 import CoreGraphics
 import CoreVideo
-import simd
 
 final class VisionPipeline {
 
-    // ---------------------------------------------------------------------
-    // MARK: - Detectors
-    // ---------------------------------------------------------------------
-
     private let markerDetector = MarkerDetectorV1()
     private let rsDetector = RollingShutterDetectorV1()
+    private let refractoryGate = RefractoryGate()
 
-    // ---------------------------------------------------------------------
-    // MARK: - State
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------
+    // MARK: - Phase
+    // -------------------------------------------------------------
 
-    private var intentState: IntentState = .idle
-    private var centroidHistory: [CGPoint] = []
+    private enum Phase: CustomStringConvertible {
+        case idle
+        case impulseDetected(at: Double)
+        case awaitingEmergence(start: Double)
+        case confirmed
 
-    // ---------------------------------------------------------------------
-    // MARK: - Tunables (LOCKED FOR V1)
-    // ---------------------------------------------------------------------
-
-    private let motionWindow: Int = 10
-    private let minCentroidSpeed: CGFloat = 1.5
-    private let minIntentFrames: Int = 3
-    private let decayFrames: Int = 6
-
-    // ---------------------------------------------------------------------
-    // MARK: - Reset
-    // ---------------------------------------------------------------------
-
-    func reset() {
-        centroidHistory.removeAll()
-        intentState = .idle
-        rsDetector.reset()
+        var description: String {
+            switch self {
+            case .idle: return "idle"
+            case .impulseDetected: return "impulseDetected"
+            case .awaitingEmergence: return "awaitingEmergence"
+            case .confirmed: return "confirmed"
+            }
+        }
     }
 
-    // ---------------------------------------------------------------------
+    private var phase: Phase = .idle
+    private var lastBallCentroid: CGPoint?
+    private var emergenceFrames: Int = 0
+
+    // -------------------------------------------------------------
+    // MARK: - Tunables (LOCKED)
+    // -------------------------------------------------------------
+
+    private let emergenceWindowSec: Double = 0.040
+    private let minEmergenceFrames: Int = 2
+    private let minBallMotionPx: CGFloat = 3.0
+
+    // -------------------------------------------------------------
+    // MARK: - Reset
+    // -------------------------------------------------------------
+
+    func reset() {
+        phase = .idle
+        lastBallCentroid = nil
+        emergenceFrames = 0
+        rsDetector.reset()
+        refractoryGate.reset(reason: "pipeline_reset")
+    }
+
+    // -------------------------------------------------------------
     // MARK: - Frame Processing
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------
 
     func processFrame(
         pixelBuffer: CVPixelBuffer,
@@ -57,88 +70,127 @@ final class VisionPipeline {
         intrinsics: CameraIntrinsics
     ) -> VisionFrameData {
 
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let w = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+        let h = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
-        // -----------------------------------------------------------------
-        // ROI (LOCKED)
-        // -----------------------------------------------------------------
-
-        let roiSide: CGFloat = 200.0
         let roiRect = CGRect(
-            x: CGFloat(width) * 0.5 - roiSide * 0.5,
-            y: CGFloat(height) * 0.5 - roiSide * 0.5,
-            width: roiSide,
-            height: roiSide
+            x: w * 0.20,
+            y: h * 0.35,
+            width: w * 0.60,
+            height: h * 0.45
         )
-
-        // -----------------------------------------------------------------
-        // Marker Presence (NOT motion authority)
-        // -----------------------------------------------------------------
 
         let marker = markerDetector.detect(
             pixelBuffer: pixelBuffer,
             roi: roiRect
         )
 
-        if let m = marker {
-            centroidHistory.append(m.center)
-        } else {
-            centroidHistory.removeAll()
-            intentState = .idle
-            rsDetector.disarm(reason: "marker_lost")
-        }
-
-        if centroidHistory.count > motionWindow {
-            centroidHistory.removeFirst()
-        }
-
-        // -----------------------------------------------------------------
-        // Intent Evaluation (ARMING ONLY)
-        // -----------------------------------------------------------------
-
-        evaluateIntentState(at: timestamp)
-
-        // Arm RS detector only when intent is active or decaying
-        switch intentState {
-        case .active, .decay:
-            rsDetector.arm()
-        default:
-            break
-        }
-
-        // -----------------------------------------------------------------
-        // RS Impulse Detection (SINGLE-SHOT)
-        // -----------------------------------------------------------------
-
-        let rsResult = rsDetector.analyze(
+        let rs = rsDetector.analyze(
             pixelBuffer: pixelBuffer,
             roi: roiRect,
             timestamp: timestamp
         )
 
-        if rsResult.isImpulse {
-            Log.info(
-                .shot,
-                String(
-                    format: "shot_detected t=%.3f zmax=%.2f",
-                    timestamp,
-                    Double(rsResult.zmax)
-                )
+        // ---------------------------------------------------------
+        // 🔍 PER-FRAME RS SNAPSHOT (UNCONDITIONAL)
+        // ---------------------------------------------------------
+
+        Log.info(
+            .shot,
+            String(
+                format:
+                "RS_FRAME t=%.3f phase=%@ z=%.2f dz=%.2f impulse=%d reject=%@",
+                timestamp,
+                phase.description,
+                rs.zmax,
+                rs.dz,
+                rs.isImpulse ? 1 : 0,
+                rs.rejectionReason
             )
+        )
+
+        // ---------------------------------------------------------
+        // Phase Machine (Path A)
+        // ---------------------------------------------------------
+
+        switch phase {
+
+        case .idle:
+            if rs.isImpulse,
+               refractoryGate.tryAcceptImpulse(timestamp: timestamp) {
+
+                Log.info(
+                    .shot,
+                    String(
+                        format: "IMPULSE_ACCEPTED t=%.3f z=%.2f dz=%.2f",
+                        timestamp, rs.zmax, rs.dz
+                    )
+                )
+
+                phase = .impulseDetected(at: timestamp)
+            }
+
+        case .impulseDetected(let t0):
+            phase = .awaitingEmergence(start: t0)
+            emergenceFrames = 0
+            lastBallCentroid = nil
+            Log.info(.shot, "PHASE → awaitingEmergence")
+
+        case .awaitingEmergence(let start):
+
+            if timestamp - start > emergenceWindowSec {
+                Log.info(.shot, "GHOST_REJECT reason=no_ball_emergence")
+                phase = .confirmed
+                break
+            }
+
+            if let m = marker {
+                if let last = lastBallCentroid {
+                    let d = hypot(m.center.x - last.x,
+                                  m.center.y - last.y)
+                    if d >= minBallMotionPx {
+                        emergenceFrames += 1
+                        Log.info(
+                            .shot,
+                            String(format: "BALL_MOTION d=%.2f frames=%d",
+                                   d, emergenceFrames)
+                        )
+                    }
+                }
+                lastBallCentroid = m.center
+            }
+
+            if emergenceFrames >= minEmergenceFrames {
+                Log.info(.shot, "SHOT_CONFIRMED")
+                phase = .confirmed
+            }
+
+        case .confirmed:
+            break
         }
 
-        // -----------------------------------------------------------------
-        // Frame Output (unchanged)
-        // -----------------------------------------------------------------
+        // ---------------------------------------------------------
+        // Refractory update (NO phase reset here)
+        // ---------------------------------------------------------
+
+        refractoryGate.update(
+            timestamp: timestamp,
+            sceneIsQuiet: marker == nil && !rs.isImpulse
+        )
+
+        // Only reset AFTER terminal phase + refractory released
+        if case .confirmed = phase, !refractoryGate.isLocked {
+            Log.info(.shot, "PHASE → idle (refractory released)")
+            phase = .idle
+        }
 
         return VisionFrameData(
             rawDetectionPoints: [],
             dots: [],
             timestamp: timestamp,
             pixelBuffer: pixelBuffer,
-            width: width,
-            height: height,
+            width: Int(w),
+            height: Int(h),
             intrinsics: intrinsics,
             trackingState: .initial,
             bearings: nil,
@@ -149,55 +201,5 @@ final class VisionPipeline {
             residuals: nil,
             flowVectors: []
         )
-    }
-
-    // ---------------------------------------------------------------------
-    // MARK: - Intent State Machine (ARMING ONLY)
-    // ---------------------------------------------------------------------
-
-    private func evaluateIntentState(at timestamp: Double) {
-
-        guard centroidHistory.count >= 2 else {
-            intentState = .idle
-            return
-        }
-
-        var speeds: [CGFloat] = []
-
-        for i in 1..<centroidHistory.count {
-            let dx = centroidHistory[i].x - centroidHistory[i - 1].x
-            let dy = centroidHistory[i].y - centroidHistory[i - 1].y
-            speeds.append(hypot(dx, dy))
-        }
-
-        let movingFrames = speeds.filter { $0 > minCentroidSpeed }.count
-
-        switch intentState {
-
-        case .idle:
-            if movingFrames >= minIntentFrames {
-                intentState = .candidate(startTime: timestamp)
-            }
-
-        case .candidate:
-            if movingFrames >= minIntentFrames {
-                intentState = .active(startTime: timestamp)
-            } else {
-                intentState = .idle
-            }
-
-        case .active:
-            if movingFrames == 0 {
-                intentState = .decay(startTime: timestamp)
-            }
-
-        case .decay:
-            if movingFrames > 0 {
-                intentState = .active(startTime: timestamp)
-            } else if centroidHistory.count >= decayFrames {
-                intentState = .idle
-                rsDetector.disarm(reason: "intent_decay_complete")
-            }
-        }
     }
 }

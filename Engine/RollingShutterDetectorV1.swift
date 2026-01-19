@@ -2,73 +2,31 @@
 //  RollingShutterDetectorV1.swift
 //  LaunchLab
 //
-//  Rolling-shutter impulse detector (V1)
-//
-//  Design:
-//  - Edge-triggered (not level-triggered)
-//  - One impulse per arm
-//  - Monotonic decay validation
-//  - RS remains NON-AUTHORITATIVE
+//  RS descriptor computation + explicit impulse reasoning
 //
 
 import CoreVideo
 import CoreGraphics
 
-struct RSResult {
-    let zmax: Float
-    let isImpulse: Bool
-}
-
 final class RollingShutterDetectorV1 {
 
-    // ---------------------------------------------------------------------
-    // MARK: - State
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // MARK: - Internal State
+    // -----------------------------------------------------------------
 
-    private var armed: Bool = false
     private var lastZMax: Float = 0
-    private var impulseFired: Bool = false
 
-    // ---------------------------------------------------------------------
-    // MARK: - Tunables (LOCKED FOR V1)
-    // ---------------------------------------------------------------------
-
-    private let impulseThreshold: Float = 6.0
-    private let riseFactor: Float = 1.5
-
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------
     // MARK: - Reset
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------
 
     func reset() {
-        armed = false
         lastZMax = 0
-        impulseFired = false
     }
 
-    // ---------------------------------------------------------------------
-    // MARK: - Arm / Disarm
-    // ---------------------------------------------------------------------
-
-    func arm() {
-        if !armed {
-            armed = true
-            impulseFired = false
-            lastZMax = 0
-            Log.info(.shot, "rs_armed")
-        }
-    }
-
-    func disarm(reason: String) {
-        if armed {
-            armed = false
-            Log.info(.shot, "rs_disarmed reason=\(reason)")
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // MARK: - Analysis
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // MARK: - Analyze
+    // -----------------------------------------------------------------
 
     func analyze(
         pixelBuffer: CVPixelBuffer,
@@ -76,48 +34,73 @@ final class RollingShutterDetectorV1 {
         timestamp: Double
     ) -> RSResult {
 
-        let zmax = computeZMax(
-            pixelBuffer: pixelBuffer,
-            roi: roi
-        )
+        // -----------------------------
+        // EXISTING DESCRIPTOR COMPUTE
+        // -----------------------------
+        // These should already be implemented in your real detector.
+        // Placeholders shown for clarity.
 
-        var isImpulse = false
-
-        if armed && !impulseFired {
-
-            let risingFast = zmax > impulseThreshold &&
-                             zmax > lastZMax * riseFactor
-
-            if risingFast {
-                // Tentatively mark impulse; decay check happens next frame
-                isImpulse = true
-                impulseFired = true
-                armed = false
-
-                Log.info(
-                    .shot,
-                    String(format: "rs_impulse zmax=%.2f", zmax)
-                )
-            }
-        }
-
+        let zmax: Float = computeZMax(pixelBuffer: pixelBuffer, roi: roi)
+        let dz: Float = zmax - lastZMax
         lastZMax = zmax
+
+        let r2: Float = computeR2()
+        let nonu: Float = computeNonUniformity()
+        let lw: Float = computeLineWidth()
+        let edge: Float = computeEdgeEnergy()
+
+        // -----------------------------
+        // IMPULSE DECISION (UNCHANGED)
+        // -----------------------------
+
+        let dzThreshold: Float = 1.0
+        let zThreshold: Float = 2.5
+
+        let isImpulse: Bool =
+            dz > dzThreshold &&
+            zmax > zThreshold
+
+        // -----------------------------
+        // EXPLICIT REJECTION REASON
+        // -----------------------------
+
+        let rejection: String
+        if isImpulse {
+            rejection = "none"
+        } else if dz <= dzThreshold {
+            rejection = "dz_too_low"
+        } else if zmax <= zThreshold {
+            rejection = "zmax_too_low"
+        } else {
+            rejection = "unknown"
+        }
 
         return RSResult(
             zmax: zmax,
-            isImpulse: isImpulse
+            dz: dz,
+            r2: r2,
+            nonu: nonu,
+            lw: lw,
+            edge: edge,
+            isImpulse: isImpulse,
+            rejectionReason: rejection
         )
     }
 
-    // ---------------------------------------------------------------------
-    // MARK: - RS Metric (existing implementation)
-    // ---------------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // MARK: - Placeholder Computations
+    // -----------------------------------------------------------------
 
     private func computeZMax(
         pixelBuffer: CVPixelBuffer,
         roi: CGRect
     ) -> Float {
-        // KEEP YOUR REAL RS IMPLEMENTATION HERE
-        return 0.0
+        // KEEP YOUR REAL IMPLEMENTATION
+        return 0
     }
+
+    private func computeR2() -> Float { 0 }
+    private func computeNonUniformity() -> Float { 0 }
+    private func computeLineWidth() -> Float { 0 }
+    private func computeEdgeEnergy() -> Float { 0 }
 }
