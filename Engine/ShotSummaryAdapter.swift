@@ -3,6 +3,7 @@
 //  LaunchLab
 //
 //  Engine adapter: ShotLifecycleRecord → EngineShotSummary
+//  Authority-only mapping (no observational leakage).
 //
 
 import Foundation
@@ -19,7 +20,12 @@ enum ShotSummaryAdapter {
             startTimestamp: record.startTimestamp,
             impactTimestamp: record.impactTimestamp,
             endTimestamp: record.endTimestamp,
-            motionDensitySummary: record.motionDensitySummary,
+
+            // Legacy field retained for compatibility.
+            // Intentionally empty: motion density is observational,
+            // not owned by the authority spine.
+            motionDensitySummary: "",
+
             refused: record.refused,
             refusalReason: record.refusalReason.map { stringify($0) },
             finalState: record.finalState.rawValue,

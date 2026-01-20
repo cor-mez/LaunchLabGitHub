@@ -56,7 +56,6 @@ final class DotTestCoordinator {
 
     var baselineModeEnabled: Bool = true
     private let minBaselineFrames: Int = 60
-    private let eventZThreshold: Double = 4.0
 
     private let detectionInterval = 2
     private var frameIndex = 0
@@ -130,7 +129,7 @@ final class DotTestCoordinator {
                 if !rsObservable {
                     Log.info(
                         .detection,
-                        "rs=no_signal raw=\(rawPoints.count) filt=\(filtPoints.count)"
+                        "rs_no_signal raw=\(rawPoints.count) filt=\(filtPoints.count)"
                     )
                 }
 
@@ -157,7 +156,7 @@ final class DotTestCoordinator {
                             self.baselineModeEnabled = false
                             Log.info(
                                 .detection,
-                                "rs baseline locked | \(self.stats.baselineSummary())"
+                                "rs_baseline_locked | \(self.stats.baselineSummary())"
                             )
                         }
                     }
@@ -166,8 +165,7 @@ final class DotTestCoordinator {
                         Log.info(
                             .detection,
                             String(
-                                format:
-                                "rs zmax=%.2f raw=%d filt=%d",
+                                format: "rs_zmax=%.2f raw=%d filt=%d",
                                 z.maxAbs,
                                 Int(sample.rawCount),
                                 Int(sample.filtCount)
@@ -194,27 +192,46 @@ final class DotTestCoordinator {
                     )
                 )
 
-                let eligibleForShot =
-                    (eligibilityDecision == .eligible)
+                let eligibleForShot = (eligibilityDecision == .eligible)
 
                 if eligibleForShot {
                     self.impulseObserver.armObservationWindow()
                 }
 
                 // ---------------------------------------------------
-                // AUTHORITY INPUT (REFUSAL-FIRST)
+                // HARD OBSERVABILITY GATES
+                // ---------------------------------------------------
+
+                let captureValid = self.cadenceEstimator.estimatedFPS >= 90
+
+                // We cannot construct RefusalReason here.
+                // Use an existing, controlled refusal reason and log specifics separately.
+                let refusalReason: RefusalReason? = {
+                    if !captureValid {
+                        Log.info(.shot, "OBSERVABILITY_REFUSE cause=invalid_capture_cadence fps=\(String(format: "%.1f", self.cadenceEstimator.estimatedFPS))")
+                        return .insufficientConfidence
+                    }
+                    if !rsObservable {
+                        Log.info(.shot, "OBSERVABILITY_REFUSE cause=rs_not_observable")
+                        return .insufficientConfidence
+                    }
+                    return nil
+                }()
+
+                // ---------------------------------------------------
+                // AUTHORITY INPUT (REFUSAL-FIRST, FAIL CLOSED)
                 // ---------------------------------------------------
 
                 let authorityInput = ShotLifecycleInput(
                     timestampSec: tSec,
-                    captureValid: self.cadenceEstimator.estimatedFPS >= 90,
+                    captureValid: captureValid,
                     rsObservable: rsObservable,
                     eligibleForShot: eligibleForShot,
                     confirmedByUpstream: false, // acceptance frozen
                     ballLockConfidence: self.debugConfidence,
                     motionDensityPhase: .idle,
                     ballSpeedPxPerSec: nil,
-                    refusalReason: nil
+                    refusalReason: refusalReason
                 )
 
                 _ = self.shotAuthority.update(authorityInput)

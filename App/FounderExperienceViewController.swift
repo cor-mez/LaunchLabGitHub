@@ -6,7 +6,7 @@
 //
 //  ROLE (STRICT):
 //  - Visualize live capture and observational telemetry
-//  - Display shot outcomes ONLY if emitted by Engine authority
+//  - Display lifecycle state and refusals only
 //  - NEVER infer, finalize, or simulate shot results
 //
 
@@ -16,8 +16,7 @@ import CoreMedia
 
 @MainActor
 final class FounderExperienceViewController: UIViewController,
-                                             CameraFrameDelegate,
-                                             FounderTelemetryObserver {
+                                             CameraFrameDelegate {
 
     // -----------------------------------------------------------
     // MARK: - Core Systems (OBSERVATION ONLY)
@@ -30,9 +29,6 @@ final class FounderExperienceViewController: UIViewController,
     // -----------------------------------------------------------
     // MARK: - UI (NON-AUTHORITATIVE)
     // -----------------------------------------------------------
-
-    private let summaryView = ShotSummaryView()
-    private let historyView = SessionHistoryView()
 
     private let instructionLabel: UILabel = {
         let l = UILabel()
@@ -55,14 +51,10 @@ final class FounderExperienceViewController: UIViewController,
 
         previewView.translatesAutoresizingMaskIntoConstraints = false
         instructionLabel.translatesAutoresizingMaskIntoConstraints = false
-        summaryView.translatesAutoresizingMaskIntoConstraints = false
-        historyView.translatesAutoresizingMaskIntoConstraints = false
         lifecycleHUD.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(previewView)
         view.addSubview(instructionLabel)
-        view.addSubview(summaryView)
-        view.addSubview(historyView)
         view.addSubview(lifecycleHUD)
 
         NSLayoutConstraint.activate([
@@ -70,7 +62,7 @@ final class FounderExperienceViewController: UIViewController,
             previewView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            previewView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.5),
+            previewView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.6),
 
             // ---------------- HUD ----------------
             lifecycleHUD.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
@@ -81,19 +73,7 @@ final class FounderExperienceViewController: UIViewController,
             // ---------------- Instruction ----------------
             instructionLabel.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 8),
             instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-
-            // ---------------- Summary ----------------
-            summaryView.topAnchor.constraint(equalTo: instructionLabel.bottomAnchor, constant: 8),
-            summaryView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            summaryView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            summaryView.heightAnchor.constraint(equalToConstant: 120),
-
-            // ---------------- History ----------------
-            historyView.topAnchor.constraint(equalTo: summaryView.bottomAnchor),
-            historyView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            historyView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            historyView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+            instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)
         ])
 
         // -------------------------------------------------------
@@ -119,26 +99,5 @@ final class FounderExperienceViewController: UIViewController,
 
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
-    }
-
-    // =====================================================================
-    // MARK: - FounderTelemetryObserver
-    // =====================================================================
-
-    /// Per-frame telemetry — observational only
-    func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry) {
-        // Intentionally empty.
-        // FounderPreviewView already reflects observational overlays.
-    }
-
-    /// Shot completion — ONLY if emitted by Engine authority
-    func didCompleteShot(
-        _ summary: ShotSummary,
-        history: [ShotRecord],
-        summaries: [ShotSummary]
-    ) {
-        // Defensive: Founder UI does not fabricate or infer shots.
-        summaryView.update(with: summary)
-        historyView.update(with: history, summaries: summaries)
     }
 }

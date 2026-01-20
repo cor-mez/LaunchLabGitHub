@@ -1,81 +1,45 @@
+//
+//  FounderExperienceModels.swift
+//  LaunchLab
+//
+//  FOUNDER OBSERVABILITY MODELS (V1)
+//
+//  ROLE (STRICT):
+//  - Support founder UI with NON-AUTHORITATIVE diagnostics
+//  - Track stability trends and confidence hints
+//  - NEVER participate in shot detection, acceptance, or refusal
+//
+
 import Foundation
 import CoreGraphics
 
-struct FounderFrameTelemetry {
-    let roi: CGRect
-    let fullSize: CGSize
+// MARK: - Founder Session Snapshot (OBSERVATIONAL ONLY)
+
+struct FounderSessionSnapshot {
+    let timestamp: Date
+    let stabilityIndex: Int
+    let confidence: Float
+    let center: CGPoint?
+    let notes: [String]
+}
+
+// MARK: - Minimal Founder Frame Input (OBSERVATIONAL)
+
+/// Minimal per-frame input for founder diagnostics.
+/// This intentionally avoids rich telemetry to prevent shadow authority.
+struct FounderFrameObservation {
+    let timestampSec: Double
     let ballLocked: Bool
     let confidence: Float
     let center: CGPoint?
-    let mdgDecision: MarkerlessDiscriminationGates.Decision?
-    let motionGatePxPerSec: Double
-    let timestampSec: Double
-    let sceneScale: SceneScale
+    let estimatedSpeedPxPerSec: Double?
 }
 
-enum FounderPresentationMode {
-    case frameDebug
-    case shotSummary
-}
-
-struct SceneScale {
-    let pixelsPerMeter: Double
-}
-
-struct ShotSummary {
-    let ballSpeed: Double?
-    let launchAngle: Double?
-    let direction: Double?
-    let shotStabilityIndex: Int
-    let impactDetected: Bool
-    let refusalReason: String?
-
-    let carryDistanceYards: Double?
-    let apexHeightYards: Double?
-    let dispersionYards: Double?
-}
-
-enum ImpactClassification: String {
-    case clean = "Clean"
-    case thin = "Thin"
-    case toe  = "Toe"
-    case heel = "Heel"
-    case unknown = "Unknown"
-}
-
-struct ShotMeasuredData {
-    let ballSpeedPxPerSec: Double?
-    let launchAngleDeg: Double?
-    let launchDirectionDeg: Double?
-    let stabilityIndex: Int
-    let impact: ImpactClassification
-}
-
-struct ShotEstimatedData {
-    let carryDistance: Double?
-    let apexHeight: Double?
-    let dispersion: Double?
-}
-
-enum ShotStatus {
-    case measured
-    case estimated
-    case refused
-}
-
-struct ShotRecord {
-    let id: Int
-    let timestamp: Date
-    let measured: ShotMeasuredData?
-    let estimated: ShotEstimatedData?
-    let status: ShotStatus
-    let refusalReasons: [String]
-}
+// MARK: - Stability Index Calculator (NON-AUTHORITATIVE)
 
 final class ShotStabilityIndexCalculator {
+
     private var speeds: [Double] = []
-    private var angles: [Double] = []
-    private var directions: [Double] = []
     private var confidences: [Float] = []
     private let window: Int
 
@@ -83,10 +47,12 @@ final class ShotStabilityIndexCalculator {
         self.window = window
     }
 
-    func push(speed: Double?, angle: Double?, direction: Double?, confidence: Float) -> Int {
+    func push(
+        speed: Double?,
+        confidence: Float
+    ) -> Int {
+
         if let s = speed { speeds.append(s) }
-        if let a = angle { angles.append(a) }
-        if let d = direction { directions.append(d) }
         confidences.append(confidence)
 
         trim()
@@ -94,10 +60,12 @@ final class ShotStabilityIndexCalculator {
     }
 
     private func trim() {
-        if speeds.count > window { speeds.removeFirst(speeds.count - window) }
-        if angles.count > window { angles.removeFirst(angles.count - window) }
-        if directions.count > window { directions.removeFirst(directions.count - window) }
-        if confidences.count > window { confidences.removeFirst(confidences.count - window) }
+        if speeds.count > window {
+            speeds.removeFirst(speeds.count - window)
+        }
+        if confidences.count > window {
+            confidences.removeFirst(confidences.count - window)
+        }
     }
 
     private func score(from values: [Double]) -> Double {
@@ -118,136 +86,58 @@ final class ShotStabilityIndexCalculator {
 
     private func compute() -> Int {
         let speedScore = score(from: speeds)
-        let angleScore = score(from: angles)
-        let dirScore = score(from: directions)
         let confScore = confidenceScore()
-
-        let composite = (speedScore + angleScore + dirScore + confScore) / 4.0
+        let composite = (speedScore + confScore) / 2.0
         return Int((composite * 100).rounded())
     }
 }
 
+// MARK: - Founder Session Manager (OBSERVATIONAL ONLY)
+
 final class FounderSessionManager {
-    private var nextId = 1
+
     private let ssi = ShotStabilityIndexCalculator()
 
-    private var lastLockedCenter: CGPoint?
-    private var lastTimestamp: Double?
-    private var armed = false
-
-    private(set) var latestShot: ShotRecord?
-    private(set) var history: [ShotRecord] = []
+    private(set) var latestSnapshot: FounderSessionSnapshot?
+    private(set) var history: [FounderSessionSnapshot] = []
 
     func reset() {
         history.removeAll()
-        latestShot = nil
-        armed = false
-        lastLockedCenter = nil
-        lastTimestamp = nil
+        latestSnapshot = nil
     }
 
-    func handleFrame(_ telemetry: FounderFrameTelemetry) -> ShotRecord? {
-        defer { updateLiveState(telemetry) }
+    /// Process a frame of founder observation.
+    /// This method NEVER detects or finalizes shots.
+    func handleFrame(_ observation: FounderFrameObservation) {
 
-        guard telemetry.ballLocked else {
-            if armed {
-                let refusal = makeRefusal(reason: telemetry.mdgDecision?.reason ?? "unlock_before_motion")
-                store(refusal)
-                return refusal
-            }
-            return nil
-        }
-
-        armed = true
-
-        guard let center = telemetry.center else {
-            return nil
-        }
-
-        if let previous = lastLockedCenter, let lastTs = lastTimestamp {
-            let dt = max(telemetry.timestampSec - lastTs, 1.0 / 240.0)
-            let dx = Double(center.x - previous.x)
-            let dy = Double(center.y - previous.y)
-            let motionPx = hypot(dx, dy) / dt
-            let observedMotion = telemetry.mdgDecision?.vPxPerSec ?? motionPx
-
-            let meetsMotionGate = observedMotion >= telemetry.motionGatePxPerSec
-
-            if meetsMotionGate {
-                let launchAngle = angleDegrees(y: -dy, x: dx)
-                let direction = angleDegrees(y: 0, x: dx)
-                let stability = ssi.push(speed: observedMotion,
-                                         angle: launchAngle,
-                                         direction: direction,
-                                         confidence: telemetry.confidence)
-
-                let record = ShotRecord(
-                    id: nextId,
-                    timestamp: Date(),
-                    measured: ShotMeasuredData(
-                        ballSpeedPxPerSec: observedMotion,
-                        launchAngleDeg: launchAngle,
-                        launchDirectionDeg: direction,
-                        stabilityIndex: stability,
-                        impact: .unknown
-                    ),
-                    estimated: ShotEstimatedData(
-                        carryDistance: nil,
-                        apexHeight: nil,
-                        dispersion: nil
-                    ),
-                    status: .measured,
-                    refusalReasons: ["spin_unobserved"]
-                )
-
-                nextId += 1
-                store(record)
-                armed = false
-                return record
-            }
-        }
-
-        lastLockedCenter = center
-        lastTimestamp = telemetry.timestampSec
-        return nil
-    }
-
-    private func disarm() {
-        armed = false
-        lastLockedCenter = nil
-        lastTimestamp = nil
-    }
-
-    private func makeRefusal(reason: String) -> ShotRecord {
-        let stability = ssi.push(speed: nil, angle: nil, direction: nil, confidence: 0)
-        disarm()
-        let record = ShotRecord(
-            id: nextId,
-            timestamp: Date(),
-            measured: nil,
-            estimated: nil,
-            status: .refused,
-            refusalReasons: [reason, "spin_unobserved"]
+        let stability = ssi.push(
+            speed: observation.estimatedSpeedPxPerSec,
+            confidence: observation.confidence
         )
-        nextId += 1
-        _ = stability
-        return record
-    }
 
-    private func store(_ record: ShotRecord) {
-        latestShot = record
-        history.append(record)
-        if history.count > 10 { history.removeFirst(history.count - 10) }
-    }
+        var notes: [String] = []
 
-    private func updateLiveState(_ telemetry: FounderFrameTelemetry) {
-        if !telemetry.ballLocked {
-            lastLockedCenter = nil
-            lastTimestamp = nil
+        if !observation.ballLocked {
+            notes.append("ball_not_locked")
         }
-    }
 
-    private func angleDegrees(y: Double, x: Double) -> Double {
-        return atan2(y, x) * 180.0 / .pi
+        if observation.estimatedSpeedPxPerSec == nil {
+            notes.append("speed_unavailable")
+        }
+
+        let snapshot = FounderSessionSnapshot(
+            timestamp: Date(),
+            stabilityIndex: stability,
+            confidence: observation.confidence,
+            center: observation.center,
+            notes: notes
+        )
+
+        latestSnapshot = snapshot
+        history.append(snapshot)
+
+        if history.count > 30 {
+            history.removeFirst(history.count - 30)
+        }
     }
 }

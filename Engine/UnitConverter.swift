@@ -4,6 +4,7 @@
 //
 //  Canonical unit conversions for the engine.
 //  Deterministic, auditable, no heuristics.
+//  Engine-pure: no UI or Founder model dependencies.
 //
 
 import Foundation
@@ -17,18 +18,8 @@ enum UnitConverter {
 
     // MARK: - Speed
 
-    /// Convert pixel velocity to MPH using scene scale.
+    /// Convert pixel velocity to MPH using an explicit pixel-to-meter scale.
     /// Returns nil if scale is invalid.
-    static func pxPerSecToMPH(
-        _ pxPerSec: Double,
-        scale: SceneScale
-    ) -> Double? {
-        guard scale.pixelsPerMeter > 0 else { return nil }
-        let metersPerSec = pxPerSec / scale.pixelsPerMeter
-        return metersPerSec * metersPerSecondToMPH
-    }
-
-    /// Explicit overload if you already have pixelsPerMeter.
     static func pxPerSecToMPH(
         _ pxPerSec: Double,
         pixelsPerMeter: Double

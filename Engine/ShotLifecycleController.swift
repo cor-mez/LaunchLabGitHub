@@ -2,10 +2,14 @@
 //  ShotLifecycleController.swift
 //  LaunchLab
 //
-//  Canonical shot authority spine (V1)
-//  Refusal-first. No discovery logic.
-//  Accepts or refuses only on explicit evidence.
-//  Engine-only, UI-agnostic.
+//  Canonical Shot Authority Spine (V1)
+//
+//  PROPERTIES:
+//  - Single authority
+//  - Refusal-first
+//  - No discovery logic
+//  - Guaranteed termination (deadman timer)
+//  - Acceptance intentionally frozen
 //
 
 import Foundation
@@ -24,30 +28,23 @@ enum ShotLifecycleState: String {
 // MARK: - Input Snapshot (AUTHORITY-ONLY)
 
 struct ShotLifecycleInput {
+
     let timestampSec: Double
 
-    // -----------------------------------------------------------
-    // HARD OBSERVABILITY GATES (must be explicit)
-    // -----------------------------------------------------------
+    // HARD OBSERVABILITY
     let captureValid: Bool
     let rsObservable: Bool
 
-    // -----------------------------------------------------------
-    // UPSTREAM EVIDENCE (authority does not infer)
-    // -----------------------------------------------------------
+    // UPSTREAM GATING
     let eligibleForShot: Bool
-    let confirmedByUpstream: Bool
+    let confirmedByUpstream: Bool   // intentionally false in V1
 
-    // -----------------------------------------------------------
-    // Legacy context (logging only)
-    // -----------------------------------------------------------
+    // CONTEXT (NON-AUTHORITATIVE)
     let ballLockConfidence: Float
     let motionDensityPhase: MotionDensityPhase
     let ballSpeedPxPerSec: Double?
 
-    // -----------------------------------------------------------
-    // Forced refusal (explicit override)
-    // -----------------------------------------------------------
+    // EXPLICIT REFUSAL (OVERRIDE)
     let refusalReason: RefusalReason?
 }
 
@@ -58,9 +55,6 @@ struct ShotLifecycleRecord {
     let startTimestamp: Double
     let impactTimestamp: Double?
     let endTimestamp: Double
-    let balllockConfidenceAtStart: Float
-    let motionDensitySummary: String
-    let peakBallSpeedPxPerSec: Double?
     let refused: Bool
     let refusalReason: RefusalReason?
     let finalState: ShotLifecycleState
@@ -71,6 +65,13 @@ struct ShotLifecycleRecord {
 final class ShotLifecycleController {
 
     // -----------------------------------------------------------
+    // Configuration
+    // -----------------------------------------------------------
+
+    /// Maximum allowed non-idle lifetime before forced reset (seconds)
+    private let deadmanTimeoutSec: Double = 1.0
+
+    // -----------------------------------------------------------
     // State
     // -----------------------------------------------------------
 
@@ -79,11 +80,7 @@ final class ShotLifecycleController {
 
     private var startTimestamp: Double?
     private var impactTimestamp: Double?
-    private var endTimestamp: Double?
-
-    private var balllockConfidenceAtStart: Float?
-    private var motionDensityPhases: [MotionDensityPhase] = []
-    private var peakBallSpeedPxPerSec: Double?
+    private var lastStateChangeTimestamp: Double?
 
     // -----------------------------------------------------------
     // Update (ONLY ENTRY POINT)
@@ -92,86 +89,92 @@ final class ShotLifecycleController {
     func update(_ input: ShotLifecycleInput) -> ShotLifecycleRecord? {
 
         // -------------------------------------------------------
-        // FORCED REFUSAL (absolute)
+        // DEADMAN TIMEOUT (ABSOLUTE SAFETY)
         // -------------------------------------------------------
 
-        if let forcedReason = input.refusalReason,
-           state != .shotFinalized,
-           state != .refused {
+        if let lastChange = lastStateChangeTimestamp,
+           state != .idle,
+           (input.timestampSec - lastChange) > deadmanTimeoutSec {
 
             Log.info(
                 .shot,
-                "shot_force_refuse t=\(fmt(input.timestampSec)) reason=\(forcedReason)"
+                "shot_deadman_timeout t=\(fmt(input.timestampSec)) state=\(state.rawValue)"
             )
 
-            return refuse(using: input, reason: forcedReason)
+            return refuse(using: input, reason: .insufficientConfidence)
         }
 
         // -------------------------------------------------------
-        // HARD OBSERVABILITY GATES (REFUSAL-FIRST)
+        // FORCED REFUSAL (EXPLICIT OVERRIDE)
         // -------------------------------------------------------
-        // IMPORTANT:
-        // ShotLifecycleController does NOT create RefusalReason.
-        // Upstream must populate input.refusalReason.
+
+        if let forced = input.refusalReason {
+            if state != .shotFinalized && state != .refused {
+                Log.info(
+                    .shot,
+                    "shot_force_refuse t=\(fmt(input.timestampSec)) reason=\(forced)"
+                )
+                return refuse(using: input, reason: forced)
+            }
+            return nil
+        }
+
+        // -------------------------------------------------------
+        // HARD OBSERVABILITY GATES (FAIL CLOSED)
         // -------------------------------------------------------
 
         if !input.captureValid || !input.rsObservable {
-            return input.refusalReason.map {
-                refuse(using: input, reason: $0)
-            }
+            Log.info(
+                .shot,
+                "shot_observability_refuse t=\(fmt(input.timestampSec)) " +
+                "captureValid=\(input.captureValid) rsObservable=\(input.rsObservable)"
+            )
+            return refuse(using: input, reason: .insufficientConfidence)
         }
 
         // -------------------------------------------------------
-        // RECORD CONTEXT (NON-AUTHORITATIVE)
-        // -------------------------------------------------------
-
-        recordMotionPhase(input.motionDensityPhase)
-
-        if state == .postImpact, let v = input.ballSpeedPxPerSec {
-            if peakBallSpeedPxPerSec == nil || v > peakBallSpeedPxPerSec! {
-                peakBallSpeedPxPerSec = v
-            }
-        }
-
-        // -------------------------------------------------------
-        // TERMINAL STATES (wait for quiet reset)
+        // TERMINAL STATES — WAIT FOR QUIET RESET
         // -------------------------------------------------------
 
         if state == .shotFinalized || state == .refused {
-            if input.motionDensityPhase == .idle && input.ballLockConfidence < 1.0 {
+            if input.motionDensityPhase == .idle {
                 reset()
             }
             return nil
         }
 
         // -------------------------------------------------------
-        // STATE MACHINE (AUTHORITY ONLY — NO DISCOVERY)
+        // STATE MACHINE (NO DISCOVERY)
         // -------------------------------------------------------
 
         switch state {
 
         case .idle:
             if input.eligibleForShot {
-                beginShot(using: input)
+                beginShot(at: input.timestampSec)
             }
 
         case .preImpact:
             if input.motionDensityPhase == .impact {
                 impactTimestamp = input.timestampSec
-                transition(to: .impactObserved, using: input)
+                transition(to: .impactObserved, at: input.timestampSec)
             }
 
         case .impactObserved:
             if input.motionDensityPhase == .separation {
-                transition(to: .postImpact, using: input)
+                transition(to: .postImpact, at: input.timestampSec)
             }
 
         case .postImpact:
+            // ACCEPTANCE IS INTENTIONALLY FROZEN IN V1
             if !input.confirmedByUpstream {
-                return input.refusalReason.map {
-                    refuse(using: input, reason: $0)
-                }
+                Log.info(
+                    .shot,
+                    "shot_refuse_unconfirmed t=\(fmt(input.timestampSec))"
+                )
+                return refuse(using: input, reason: .insufficientConfidence)
             }
+
             return finalize(using: input)
 
         case .shotFinalized, .refused:
@@ -183,23 +186,25 @@ final class ShotLifecycleController {
 
     // MARK: - Transitions
 
-    private func beginShot(using input: ShotLifecycleInput) {
-        startTimestamp = input.timestampSec
-        balllockConfidenceAtStart = input.ballLockConfidence
+    private func beginShot(at t: Double) {
+        startTimestamp = t
         impactTimestamp = nil
-        peakBallSpeedPxPerSec = nil
-        motionDensityPhases.removeAll()
-        transition(to: .preImpact, using: input)
+        transition(to: .preImpact, at: t)
     }
 
     private func finalize(using input: ShotLifecycleInput) -> ShotLifecycleRecord {
-        endTimestamp = input.timestampSec
-        transition(to: .shotFinalized, using: input)
+        transition(to: .shotFinalized, at: input.timestampSec)
 
-        let record = buildRecord(
-            finalState: .shotFinalized,
-            refusalReason: nil
+        let record = ShotLifecycleRecord(
+            shotId: nextShotId,
+            startTimestamp: startTimestamp ?? input.timestampSec,
+            impactTimestamp: impactTimestamp,
+            endTimestamp: input.timestampSec,
+            refused: false,
+            refusalReason: nil,
+            finalState: .shotFinalized
         )
+
         advanceShotId()
         return record
     }
@@ -209,88 +214,48 @@ final class ShotLifecycleController {
         reason: RefusalReason
     ) -> ShotLifecycleRecord {
 
-        endTimestamp = input.timestampSec
-        transition(to: .refused, using: input, refusalReason: reason)
+        transition(to: .refused, at: input.timestampSec)
 
-        let record = buildRecord(
-            finalState: .refused,
-            refusalReason: reason
+        let record = ShotLifecycleRecord(
+            shotId: nextShotId,
+            startTimestamp: startTimestamp ?? input.timestampSec,
+            impactTimestamp: impactTimestamp,
+            endTimestamp: input.timestampSec,
+            refused: true,
+            refusalReason: reason,
+            finalState: .refused
         )
+
         advanceShotId()
         return record
     }
 
     private func transition(
         to newState: ShotLifecycleState,
-        using input: ShotLifecycleInput,
-        refusalReason: RefusalReason? = nil
+        at t: Double
     ) {
         let from = state
         state = newState
+        lastStateChangeTimestamp = t
 
-        if let rr = refusalReason {
-            Log.info(
-                .shot,
-                "shot_state_transition t=\(fmt(input.timestampSec)) " +
-                "from=\(from.rawValue) to=\(newState.rawValue) reason=\(rr)"
-            )
-        } else {
-            Log.info(
-                .shot,
-                "shot_state_transition t=\(fmt(input.timestampSec)) " +
-                "from=\(from.rawValue) to=\(newState.rawValue)"
-            )
-        }
-    }
-
-    // MARK: - Record Assembly
-
-    private func buildRecord(
-        finalState: ShotLifecycleState,
-        refusalReason: RefusalReason?
-    ) -> ShotLifecycleRecord {
-
-        ShotLifecycleRecord(
-            shotId: nextShotId,
-            startTimestamp: startTimestamp ?? 0,
-            impactTimestamp: impactTimestamp,
-            endTimestamp: endTimestamp ?? startTimestamp ?? 0,
-            balllockConfidenceAtStart: balllockConfidenceAtStart ?? 0,
-            motionDensitySummary: motionDensityPhases
-                .map { $0.rawValue }
-                .joined(separator: "→"),
-            peakBallSpeedPxPerSec: peakBallSpeedPxPerSec,
-            refused: finalState == .refused,
-            refusalReason: refusalReason,
-            finalState: finalState
+        Log.info(
+            .shot,
+            "shot_state_transition t=\(fmt(t)) from=\(from.rawValue) to=\(newState.rawValue)"
         )
     }
 
-    // MARK: - Reset Helpers
-
-    private func advanceShotId() {
-        nextShotId += 1
-        clearState()
-    }
-
-    private func clearState() {
-        startTimestamp = nil
-        impactTimestamp = nil
-        endTimestamp = nil
-        balllockConfidenceAtStart = nil
-        peakBallSpeedPxPerSec = nil
-        motionDensityPhases.removeAll()
-    }
-
-    private func recordMotionPhase(_ phase: MotionDensityPhase) {
-        if motionDensityPhases.last != phase {
-            motionDensityPhases.append(phase)
-        }
-    }
+    // MARK: - Reset
 
     private func reset() {
         state = .idle
-        clearState()
+        startTimestamp = nil
+        impactTimestamp = nil
+        lastStateChangeTimestamp = nil
+    }
+
+    private func advanceShotId() {
+        nextShotId += 1
+        reset()
     }
 
     // MARK: - Formatting

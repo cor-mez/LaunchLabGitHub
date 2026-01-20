@@ -2,8 +2,12 @@
 //  VisionPipelineActor.swift
 //  LaunchLab
 //
-//  Lightweight actor wrapper around VisionPipeline to keep
-//  heavy vision work off the main thread.
+//  Actor-isolated observability wrapper for VisionPipeline.
+//
+//  ROLE (STRICT):
+//  - Perform heavy vision / RS observability off the main thread
+//  - Guarantee per-frame isolation of VisionPipeline execution
+//  - NEVER reference authority, lifecycle, or shot decisions
 //
 
 import Foundation
@@ -12,10 +16,15 @@ import CoreVideo
 actor VisionPipelineActor {
 
     // -------------------------------------------------------------------------
-    // MARK: - Stored Properties
+    // MARK: - Stored Properties (ACTOR-ISOLATED)
     // -------------------------------------------------------------------------
 
-    let pipeline: VisionPipeline
+    /// Observability-only pipeline.
+    /// Must never be accessed outside this actor.
+    private let pipeline: VisionPipeline
+
+    /// Cached thermal state for future observational gating.
+    /// Not used for authority.
     private var thermalState: ProcessInfo.ThermalState =
         ProcessInfo.processInfo.thermalState
 
@@ -28,33 +37,33 @@ actor VisionPipelineActor {
     }
 
     // -------------------------------------------------------------------------
-    // MARK: - Thermal State
+    // MARK: - Thermal State (OBSERVATIONAL)
     // -------------------------------------------------------------------------
 
-    /// Update the latest thermal state (can be used for gating by caller).
+    /// Updates thermal state for observability diagnostics.
+    /// Does NOT affect authority or acceptance.
     func updateThermalState(_ state: ProcessInfo.ThermalState) {
         thermalState = state
     }
 
     // -------------------------------------------------------------------------
-    // MARK: - Frame Processing
+    // MARK: - Frame Processing (OBSERVATIONAL ONLY)
     // -------------------------------------------------------------------------
 
-    /// Asynchronous frame processing entry point.
+    /// Asynchronous observability entry point.
     ///
-    /// - Parameters:
-    ///   - pixelBuffer: Camera frame buffer.
-    ///   - timestamp:   Host time (seconds).
-    ///   - intrinsics:  Camera intrinsics for this frame.
-    ///   - imu:         IMU state (not yet consumed by VisionPipeline V1).
+    /// IMPORTANT:
+    /// - This function MUST remain authority-free.
+    /// - Returned VisionFrameData is frame-scoped and non-authoritative.
+    /// - All shot decisions must occur elsewhere via ShotLifecycleController.
     func processFrame(
         pixelBuffer: CVPixelBuffer,
         timestamp: Double,
         intrinsics: CameraIntrinsics,
         imu: IMUState
-    ) async -> VisionFrameData? {
+    ) async -> VisionFrameData {
 
-        // IMU + thermalState can be used here for future gating if needed
+        // Explicitly unused in V1; retained for future observability
         _ = imu
         _ = thermalState
 

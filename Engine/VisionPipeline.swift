@@ -3,8 +3,9 @@
 //  LaunchLab
 //
 //  RS-first observability pipeline.
-//  No ball assumptions. No marker dependency.
-//  Answers only: did the sensor see a coherent RS event?
+//  NO AUTHORITY.
+//  NO LIFECYCLE.
+//  Answers only: what did the sensor encode on this frame?
 //
 
 import Foundation
@@ -21,26 +22,6 @@ final class VisionPipeline {
     private let refractoryGate = RefractoryGate()
 
     // -------------------------------------------------------------
-    // MARK: - Phase
-    // -------------------------------------------------------------
-
-    private enum Phase: CustomStringConvertible {
-        case idle
-        case rsCandidate(timestamp: Double)
-        case confirmed(timestamp: Double)
-
-        var description: String {
-            switch self {
-            case .idle: return "idle"
-            case .rsCandidate: return "rsCandidate"
-            case .confirmed: return "confirmed"
-            }
-        }
-    }
-
-    private var phase: Phase = .idle
-
-    // -------------------------------------------------------------
     // MARK: - Tunables (LOCKED FOR DIAGNOSIS)
     // -------------------------------------------------------------
 
@@ -50,21 +31,17 @@ final class VisionPipeline {
     /// Maximum allowed flicker banding dominance
     private let maxBandingScore: Float = 8_000
 
-    /// Refractory window controlled elsewhere
-    /// No time decay logic here
-
     // -------------------------------------------------------------
     // MARK: - Reset
     // -------------------------------------------------------------
 
     func reset() {
-        phase = .idle
         rsDetector.reset()
         refractoryGate.reset(reason: "pipeline_reset")
     }
 
     // -------------------------------------------------------------
-    // MARK: - Frame Processing
+    // MARK: - Frame Processing (OBSERVATIONAL ONLY)
     // -------------------------------------------------------------
 
     func processFrame(
@@ -91,16 +68,15 @@ final class VisionPipeline {
         )
 
         // ---------------------------------------------------------
-        // 🔍 PER-FRAME OBSERVABILITY LOG (ALWAYS ON)
+        // 🔍 PER-FRAME OBSERVABILITY LOG (TRUTHFUL)
         // ---------------------------------------------------------
 
         Log.info(
             .shot,
             String(
                 format:
-                "RS_FRAME t=%.3f phase=%@ z=%.2f dz=%.2f rowCorr=%.2f band=%.0f impulse=%d reject=%@",
+                "RS_OBSERVED t=%.3f z=%.2f dz=%.2f rowCorr=%.2f band=%.0f impulse=%d reject=%@",
                 timestamp,
-                phase.description,
                 rs.zmax,
                 rs.dz,
                 rs.rowAdjCorrelation,
@@ -111,68 +87,30 @@ final class VisionPipeline {
         )
 
         // ---------------------------------------------------------
-        // Phase Machine
+        // RS STRUCTURE OBSERVABILITY (NO LATCHING)
         // ---------------------------------------------------------
 
-        switch phase {
+        let rsStructureObservable =
+            rs.isImpulse &&
+            rs.rowAdjCorrelation >= minRowAdjCorrelation &&
+            rs.bandingScore <= maxBandingScore &&
+            refractoryGate.tryAcceptImpulse(timestamp: timestamp)
 
-        case .idle:
-
-            // Accept ONLY if RS structure passes observability gates
-            if rs.isImpulse,
-               rs.rowAdjCorrelation >= minRowAdjCorrelation,
-               rs.bandingScore <= maxBandingScore,
-               refractoryGate.tryAcceptImpulse(timestamp: timestamp) {
-
-                Log.info(
-                    .shot,
-                    String(
-                        format:
-                        "RS_CANDIDATE_ACCEPTED t=%.3f rowCorr=%.2f band=%.0f",
-                        timestamp,
-                        rs.rowAdjCorrelation,
-                        rs.bandingScore
-                    )
+        if rsStructureObservable {
+            Log.info(
+                .shot,
+                String(
+                    format:
+                    "RS_SIGNAL_OBSERVED t=%.3f rowCorr=%.2f band=%.0f",
+                    timestamp,
+                    rs.rowAdjCorrelation,
+                    rs.bandingScore
                 )
-
-                phase = .rsCandidate(timestamp: timestamp)
-            }
-
-        case .rsCandidate(let t0):
-
-            // One-frame confirmation only — no emergence logic
-            // We are confirming *sensor structure*, not object tracking
-
-            if rs.rowAdjCorrelation >= minRowAdjCorrelation &&
-               rs.bandingScore <= maxBandingScore {
-
-                Log.info(
-                    .shot,
-                    String(format: "RS_EVENT_CONFIRMED t=%.3f", t0)
-                )
-
-                phase = .confirmed(timestamp: t0)
-            } else {
-                Log.info(
-                    .shot,
-                    String(
-                        format:
-                        "RS_EVENT_REJECTED t=%.3f reason=rowCorr=%.2f band=%.0f",
-                        t0,
-                        rs.rowAdjCorrelation,
-                        rs.bandingScore
-                    )
-                )
-                phase = .idle
-            }
-
-        case .confirmed:
-            // Hold until refractory releases
-            break
+            )
         }
 
         // ---------------------------------------------------------
-        // Refractory update (no silent phase reset)
+        // Refractory update (OBSERVATIONAL SUPPRESSION ONLY)
         // ---------------------------------------------------------
 
         refractoryGate.update(
@@ -181,13 +119,13 @@ final class VisionPipeline {
         )
 
         if !refractoryGate.isLocked {
-            if case .idle = phase {
-                // already idle, no-op
-            } else {
-                Log.info(.shot, "PHASE → idle (refractory released)")
-                phase = .idle
-            }
+            // No state to reset; log only for visibility
+            Log.info(.shot, "RS_REFRACTORY_RELEASED t=\(String(format: "%.3f", timestamp))")
         }
+
+        // ---------------------------------------------------------
+        // Emit frame data (NO AUTHORITY FIELDS SET)
+        // ---------------------------------------------------------
 
         return VisionFrameData(
             rawDetectionPoints: [],
