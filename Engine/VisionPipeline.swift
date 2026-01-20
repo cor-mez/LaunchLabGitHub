@@ -5,6 +5,7 @@
 //  RS-first observability pipeline.
 //  NO AUTHORITY.
 //  NO LIFECYCLE.
+//  NO GATING.
 //  Answers only: what did the sensor encode on this frame?
 //
 
@@ -15,11 +16,11 @@ import CoreVideo
 final class VisionPipeline {
 
     // -------------------------------------------------------------
-    // MARK: - Dependencies
+    // MARK: - Dependencies (OBSERVATIONAL ONLY)
     // -------------------------------------------------------------
 
     private let rsDetector = RollingShutterDetectorV2()
-    private let refractoryGate = RefractoryGate()
+    private let refractoryObserver = RefractoryGate()
 
     // -------------------------------------------------------------
     // MARK: - Tunables (LOCKED FOR DIAGNOSIS)
@@ -37,7 +38,7 @@ final class VisionPipeline {
 
     func reset() {
         rsDetector.reset()
-        refractoryGate.reset(reason: "pipeline_reset")
+        refractoryObserver.reset(reason: "pipeline_reset")
     }
 
     // -------------------------------------------------------------
@@ -68,7 +69,7 @@ final class VisionPipeline {
         )
 
         // ---------------------------------------------------------
-        // 🔍 PER-FRAME OBSERVABILITY LOG (TRUTHFUL)
+        // 🔍 PER-FRAME RS OBSERVABILITY (TRUTHFUL)
         // ---------------------------------------------------------
 
         Log.info(
@@ -87,21 +88,20 @@ final class VisionPipeline {
         )
 
         // ---------------------------------------------------------
-        // RS STRUCTURE OBSERVABILITY (NO LATCHING)
+        // RS STRUCTURE OBSERVABILITY (NO SUPPRESSION)
         // ---------------------------------------------------------
 
         let rsStructureObservable =
             rs.isImpulse &&
             rs.rowAdjCorrelation >= minRowAdjCorrelation &&
-            rs.bandingScore <= maxBandingScore &&
-            refractoryGate.tryAcceptImpulse(timestamp: timestamp)
+            rs.bandingScore <= maxBandingScore
 
         if rsStructureObservable {
             Log.info(
                 .shot,
                 String(
                     format:
-                    "RS_SIGNAL_OBSERVED t=%.3f rowCorr=%.2f band=%.0f",
+                    "RS_STRUCTURE_OBSERVED t=%.3f rowCorr=%.2f band=%.0f",
                     timestamp,
                     rs.rowAdjCorrelation,
                     rs.bandingScore
@@ -110,17 +110,11 @@ final class VisionPipeline {
         }
 
         // ---------------------------------------------------------
-        // Refractory update (OBSERVATIONAL SUPPRESSION ONLY)
+        // REFRACTORY TIMING OBSERVATION (NO EFFECT)
         // ---------------------------------------------------------
 
-        refractoryGate.update(
-            timestamp: timestamp,
-            sceneIsQuiet: !rs.isImpulse
-        )
-
-        if !refractoryGate.isLocked {
-            // No state to reset; log only for visibility
-            Log.info(.shot, "RS_REFRACTORY_RELEASED t=\(String(format: "%.3f", timestamp))")
+        if rs.isImpulse {
+            _ = refractoryObserver.observeImpulse(timestamp: timestamp)
         }
 
         // ---------------------------------------------------------

@@ -2,11 +2,11 @@
 //  DotTestCoordinator.swift
 //  LaunchLab
 //
-//  Rolling-Shutter Measurement Harness v5
+//  Rolling-Shutter Measurement Harness v6
 //
 //  OBSERVATION + WIRING ONLY
-//  - No detection
-//  - No authority
+//  - No detection authority
+//  - No lifecycle decisions
 //  - Feeds ShotLifecycleController with explicit evidence
 //
 
@@ -19,7 +19,7 @@ final class DotTestCoordinator {
     static let shared = DotTestCoordinator()
 
     // -----------------------------------------------------------
-    // Core Observers
+    // Core Observers (OBSERVATIONAL ONLY)
     // -----------------------------------------------------------
 
     private let detector = MetalDetector.shared
@@ -27,22 +27,18 @@ final class DotTestCoordinator {
     private let rsFilter = RSGatedPointFilter()
     private let stats = RollingShutterSessionStats()
 
-    // -----------------------------------------------------------
-    // Authority Spine (SINGULAR)
-    // -----------------------------------------------------------
-
-    private let shotAuthority = ShotLifecycleController()
-    private let eligibilityGate = ShotAuthorityGate()
+    private let eligibilityObserver = ShotAuthorityGate()
     private let impulseObserver = ImpactImpulseAuthority()
-
-    // -----------------------------------------------------------
-    // Cadence Estimation (OBSERVABILITY)
-    // -----------------------------------------------------------
-
     private let cadenceEstimator = CadenceEstimator()
 
     // -----------------------------------------------------------
-    // Overlay / Debug (NON-AUTHORITATIVE)
+    // Authority Spine (SINGULAR, ACTOR)
+    // -----------------------------------------------------------
+
+    private let shotAuthority = ShotLifecycleController()
+
+    // -----------------------------------------------------------
+    // Debug / Overlay (NON-AUTHORITATIVE)
     // -----------------------------------------------------------
 
     private(set) var debugROI: CGRect = .zero
@@ -100,8 +96,6 @@ final class DotTestCoordinator {
 
         debugROI = roi
         debugFullSize = CGSize(width: w, height: h)
-        debugBallLocked = false
-        debugConfidence = 0
 
         detector.prepareFrameY(
             pb,
@@ -175,66 +169,64 @@ final class DotTestCoordinator {
                 }
 
                 // ---------------------------------------------------
-                // MOTION / ELIGIBILITY (STUB SIGNALS)
+                // ELIGIBILITY OBSERVATION (FACTS ONLY)
                 // ---------------------------------------------------
 
-                let lifecycleState: ShotAuthorityLifecycleState =
-                    (self.shotAuthority.state == .idle) ? .idle : .inProgress
-
-                let eligibilityDecision = self.eligibilityGate.update(
-                    ShotAuthorityGateInput(
-                        timestampSec: tSec,
-                        ballLockConfidence: self.debugConfidence,
-                        instantaneousPxPerSec: 0, // stubbed
-                        motionPhase: .idle,       // stubbed
-                        framesSinceIdle: self.framesSinceIdle,
-                        lifecycleState: lifecycleState
-                    )
+                let eligibilityEvidence = self.eligibilityObserver.observe(
+                    presenceConfidence: self.debugConfidence,
+                    instantaneousPxPerSec: 0,   // stubbed
+                    motionPhase: .idle,         // stubbed
+                    framesSinceIdle: self.framesSinceIdle
                 )
 
-                let eligibleForShot = (eligibilityDecision == .eligible)
-
-                if eligibleForShot {
-                    self.impulseObserver.armObservationWindow()
-                }
+                let eligibleForShot =
+                    eligibilityEvidence.presenceConfidence >= 80 &&
+                    eligibilityEvidence.instantaneousPxPerSec >= 220 &&
+                    eligibilityEvidence.motionPhase != .idle
 
                 // ---------------------------------------------------
-                // HARD OBSERVABILITY GATES
+                // IMPULSE OBSERVATION (DERIVATIVE ONLY)
+                // ---------------------------------------------------
+
+                let impulseObserved =
+                    self.impulseObserver.observe(speedPxPerSec: 0)?.deltaSpeedPxPerSec ?? 0 > 900
+
+                // ---------------------------------------------------
+                // HARD OBSERVABILITY (FAIL CLOSED)
                 // ---------------------------------------------------
 
                 let captureValid = self.cadenceEstimator.estimatedFPS >= 90
 
-                // We cannot construct RefusalReason here.
-                // Use an existing, controlled refusal reason and log specifics separately.
                 let refusalReason: RefusalReason? = {
                     if !captureValid {
-                        Log.info(.shot, "OBSERVABILITY_REFUSE cause=invalid_capture_cadence fps=\(String(format: "%.1f", self.cadenceEstimator.estimatedFPS))")
+                        Log.info(.shot, "OBSERVABILITY_REFUSE invalid_capture_cadence")
                         return .insufficientConfidence
                     }
                     if !rsObservable {
-                        Log.info(.shot, "OBSERVABILITY_REFUSE cause=rs_not_observable")
+                        Log.info(.shot, "OBSERVABILITY_REFUSE rs_not_observable")
                         return .insufficientConfidence
                     }
                     return nil
                 }()
 
                 // ---------------------------------------------------
-                // AUTHORITY INPUT (REFUSAL-FIRST, FAIL CLOSED)
+                // AUTHORITY INPUT (SINGULAR SPINE)
                 // ---------------------------------------------------
 
-                let authorityInput = ShotLifecycleInput(
-                    timestampSec: tSec,
-                    captureValid: captureValid,
-                    rsObservable: rsObservable,
-                    eligibleForShot: eligibleForShot,
-                    confirmedByUpstream: false, // acceptance frozen
-                    ballLockConfidence: self.debugConfidence,
-                    motionDensityPhase: .idle,
-                    ballSpeedPxPerSec: nil,
-                    refusalReason: refusalReason
-                )
-
-                _ = self.shotAuthority.update(authorityInput)
+                Task {
+                    _ = await self.shotAuthority.update(
+                        ShotLifecycleInput(
+                            timestampSec: tSec,
+                            captureValid: captureValid,
+                            rsObservable: rsObservable,
+                            eligibleForShot: eligibleForShot,
+                            impactObserved: impulseObserved,
+                            postImpactObserved: false,   // wired later
+                            confirmedByUpstream: false,  // frozen
+                            refusalReason: refusalReason
+                        )
+                    )
+                }
             }
         }
     }

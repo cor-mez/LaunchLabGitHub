@@ -7,6 +7,7 @@
 //  PROPERTIES:
 //  - Single authority
 //  - Refusal-first
+//  - Actor-isolated (thread-safe)
 //  - No discovery logic
 //  - Guaranteed termination (deadman timer)
 //  - Acceptance intentionally frozen
@@ -18,9 +19,8 @@ import Foundation
 
 enum ShotLifecycleState: String {
     case idle
-    case preImpact
-    case impactObserved
-    case postImpact
+    case awaitingImpact
+    case awaitingPostImpact
     case shotFinalized
     case refused
 }
@@ -35,14 +35,11 @@ struct ShotLifecycleInput {
     let captureValid: Bool
     let rsObservable: Bool
 
-    // UPSTREAM GATING
+    // UPSTREAM EVIDENCE (FACTS ONLY)
     let eligibleForShot: Bool
+    let impactObserved: Bool
+    let postImpactObserved: Bool
     let confirmedByUpstream: Bool   // intentionally false in V1
-
-    // CONTEXT (NON-AUTHORITATIVE)
-    let ballLockConfidence: Float
-    let motionDensityPhase: MotionDensityPhase
-    let ballSpeedPxPerSec: Double?
 
     // EXPLICIT REFUSAL (OVERRIDE)
     let refusalReason: RefusalReason?
@@ -62,13 +59,13 @@ struct ShotLifecycleRecord {
 
 // MARK: - Controller (SINGULAR AUTHORITY)
 
-final class ShotLifecycleController {
+actor ShotLifecycleController {
 
     // -----------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------
 
-    /// Maximum allowed non-idle lifetime before forced reset (seconds)
+    /// Maximum allowed non-idle lifetime before forced refusal (seconds)
     private let deadmanTimeoutSec: Double = 1.0
 
     // -----------------------------------------------------------
@@ -101,22 +98,22 @@ final class ShotLifecycleController {
                 "shot_deadman_timeout t=\(fmt(input.timestampSec)) state=\(state.rawValue)"
             )
 
-            return refuse(using: input, reason: .insufficientConfidence)
+            return refuse(at: input.timestampSec, reason: .lifecycleTimeout)
         }
 
         // -------------------------------------------------------
         // FORCED REFUSAL (EXPLICIT OVERRIDE)
         // -------------------------------------------------------
 
-        if let forced = input.refusalReason {
-            if state != .shotFinalized && state != .refused {
-                Log.info(
-                    .shot,
-                    "shot_force_refuse t=\(fmt(input.timestampSec)) reason=\(forced)"
-                )
-                return refuse(using: input, reason: forced)
-            }
-            return nil
+        if let forced = input.refusalReason,
+           state != .shotFinalized && state != .refused {
+
+            Log.info(
+                .shot,
+                "shot_force_refuse t=\(fmt(input.timestampSec)) reason=\(forced)"
+            )
+
+            return refuse(at: input.timestampSec, reason: forced)
         }
 
         // -------------------------------------------------------
@@ -129,7 +126,7 @@ final class ShotLifecycleController {
                 "shot_observability_refuse t=\(fmt(input.timestampSec)) " +
                 "captureValid=\(input.captureValid) rsObservable=\(input.rsObservable)"
             )
-            return refuse(using: input, reason: .insufficientConfidence)
+            return refuse(at: input.timestampSec, reason: .insufficientConfidence)
         }
 
         // -------------------------------------------------------
@@ -137,45 +134,37 @@ final class ShotLifecycleController {
         // -------------------------------------------------------
 
         if state == .shotFinalized || state == .refused {
-            if input.motionDensityPhase == .idle {
-                reset()
-            }
             return nil
         }
 
         // -------------------------------------------------------
-        // STATE MACHINE (NO DISCOVERY)
+        // STATE MACHINE (FACT-DRIVEN ONLY)
         // -------------------------------------------------------
 
         switch state {
 
         case .idle:
             if input.eligibleForShot {
-                beginShot(at: input.timestampSec)
+                startTimestamp = input.timestampSec
+                transition(to: .awaitingImpact, at: input.timestampSec)
             }
 
-        case .preImpact:
-            if input.motionDensityPhase == .impact {
+        case .awaitingImpact:
+            if input.impactObserved {
                 impactTimestamp = input.timestampSec
-                transition(to: .impactObserved, at: input.timestampSec)
+                transition(to: .awaitingPostImpact, at: input.timestampSec)
             }
 
-        case .impactObserved:
-            if input.motionDensityPhase == .separation {
-                transition(to: .postImpact, at: input.timestampSec)
-            }
+        case .awaitingPostImpact:
+            if input.postImpactObserved {
 
-        case .postImpact:
-            // ACCEPTANCE IS INTENTIONALLY FROZEN IN V1
-            if !input.confirmedByUpstream {
-                Log.info(
-                    .shot,
-                    "shot_refuse_unconfirmed t=\(fmt(input.timestampSec))"
-                )
-                return refuse(using: input, reason: .insufficientConfidence)
-            }
+                // ACCEPTANCE FROZEN — require explicit upstream confirmation
+                guard input.confirmedByUpstream else {
+                    return refuse(at: input.timestampSec, reason: .insufficientConfidence)
+                }
 
-            return finalize(using: input)
+                return finalize(at: input.timestampSec)
+            }
 
         case .shotFinalized, .refused:
             break
@@ -184,22 +173,17 @@ final class ShotLifecycleController {
         return nil
     }
 
-    // MARK: - Transitions
+    // MARK: - Finalization
 
-    private func beginShot(at t: Double) {
-        startTimestamp = t
-        impactTimestamp = nil
-        transition(to: .preImpact, at: t)
-    }
+    private func finalize(at t: Double) -> ShotLifecycleRecord {
 
-    private func finalize(using input: ShotLifecycleInput) -> ShotLifecycleRecord {
-        transition(to: .shotFinalized, at: input.timestampSec)
+        transition(to: .shotFinalized, at: t)
 
         let record = ShotLifecycleRecord(
             shotId: nextShotId,
-            startTimestamp: startTimestamp ?? input.timestampSec,
+            startTimestamp: startTimestamp ?? t,
             impactTimestamp: impactTimestamp,
-            endTimestamp: input.timestampSec,
+            endTimestamp: t,
             refused: false,
             refusalReason: nil,
             finalState: .shotFinalized
@@ -210,17 +194,17 @@ final class ShotLifecycleController {
     }
 
     private func refuse(
-        using input: ShotLifecycleInput,
+        at t: Double,
         reason: RefusalReason
     ) -> ShotLifecycleRecord {
 
-        transition(to: .refused, at: input.timestampSec)
+        transition(to: .refused, at: t)
 
         let record = ShotLifecycleRecord(
             shotId: nextShotId,
-            startTimestamp: startTimestamp ?? input.timestampSec,
+            startTimestamp: startTimestamp ?? t,
             impactTimestamp: impactTimestamp,
-            endTimestamp: input.timestampSec,
+            endTimestamp: t,
             refused: true,
             refusalReason: reason,
             finalState: .refused
@@ -229,6 +213,8 @@ final class ShotLifecycleController {
         advanceShotId()
         return record
     }
+
+    // MARK: - State Helpers
 
     private func transition(
         to newState: ShotLifecycleState,
@@ -244,18 +230,16 @@ final class ShotLifecycleController {
         )
     }
 
-    // MARK: - Reset
+    private func advanceShotId() {
+        nextShotId += 1
+        reset()
+    }
 
     private func reset() {
         state = .idle
         startTimestamp = nil
         impactTimestamp = nil
         lastStateChangeTimestamp = nil
-    }
-
-    private func advanceShotId() {
-        nextShotId += 1
-        reset()
     }
 
     // MARK: - Formatting
