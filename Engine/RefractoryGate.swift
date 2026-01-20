@@ -2,147 +2,86 @@
 //  RefractoryGate.swift
 //  LaunchLab
 //
-//  Hard non-reentrant one-shot suppression gate.
-//  Guarantees: ONE physical impulse → ONE detection.
-//  Time-based lock + quiet-based release.
-//  No physics heuristics. No decay modeling.
+//  Prevents repeated authority claims from temporally adjacent impulses.
+//  This is NOT a detector — it is a safety gate.
 //
 
 import Foundation
 
 final class RefractoryGate {
 
-    // -----------------------------------------------------------------
-    // MARK: - Configuration (LOCKED FOR V1)
-    // -----------------------------------------------------------------
-
-    /// Absolute dead-time after accepting an impulse
-    private let refractoryDuration: TimeInterval = 0.600   // 600 ms
-
-    /// Required quiet frames AFTER refractory window to re-arm
-    private let minQuietFrames: Int = 12
-
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
     // MARK: - State
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
 
-    private enum State {
-        case ready
-        case locked(until: TimeInterval)
-    }
+    private(set) var isLocked: Bool = false
+    private var lastImpulseTime: Double? = nil
 
-    private var state: State = .ready
-    private var quietFrameCount: Int = 0
+    // -------------------------------------------------------------
+    // MARK: - Tunables (LOCKED FOR DIAGNOSIS)
+    // -------------------------------------------------------------
 
-    /// Observability only
-    private var lastAcceptedTimestamp: TimeInterval?
+    /// Minimum time between accepted impulses (seconds)
+    private let refractoryDuration: Double = 0.020  // 20 ms
 
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
     // MARK: - Reset
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
 
-    func reset(reason: String? = nil) {
-        state = .ready
-        quietFrameCount = 0
-
-        if let reason {
-            Log.info(.shot, "refractory_reset reason=\(reason)")
-        }
+    func reset(reason: String) {
+        isLocked = false
+        lastImpulseTime = nil
+        Log.info(.shot, "REFRACTORY_RESET reason=\(reason)")
     }
 
-    // -----------------------------------------------------------------
-    // MARK: - Update (per-frame)
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
+    // MARK: - Attempt Acceptance
+    // -------------------------------------------------------------
 
-    /// Call once per frame with scene quiet signal.
-    /// Scene quiet MUST mean: no centroid motion, no RS impulse, no gross motion.
-    func update(
-        timestamp: TimeInterval,
-        sceneIsQuiet: Bool
-    ) {
-        switch state {
+    /// Returns true iff the impulse is allowed to proceed
+    func tryAcceptImpulse(timestamp: Double) -> Bool {
 
-        case .ready:
-            // Nothing to do; we only count quiet frames while locked
-            break
-
-        case .locked(let until):
-
-            // Still inside hard dead-time window
-            if timestamp < until {
-                quietFrameCount = 0
-                return
-            }
-
-            // Past dead-time window: require sustained quiet to re-arm
-            if sceneIsQuiet {
-                quietFrameCount += 1
-
-                if quietFrameCount >= minQuietFrames {
-                    Log.info(
-                        .shot,
-                        String(
-                            format: "refractory_released t=%.3f quietFrames=%d",
-                            timestamp,
-                            quietFrameCount
-                        )
-                    )
-                    reset(reason: "quiet_sustained")
-                }
-            } else {
-                quietFrameCount = 0
+        if let last = lastImpulseTime {
+            let dt = timestamp - last
+            if dt < refractoryDuration {
+                return false
             }
         }
+
+        // Accept and lock
+        lastImpulseTime = timestamp
+        isLocked = true
+
+        Log.info(
+            .shot,
+            String(format: "REFRACTORY_LOCK t=%.3f", timestamp)
+        )
+
+        return true
     }
 
-    // -----------------------------------------------------------------
-    // MARK: - Authority
-    // -----------------------------------------------------------------
+    // -------------------------------------------------------------
+    // MARK: - Update / Release
+    // -------------------------------------------------------------
 
-    /// Returns TRUE exactly once per physical strike.
-    /// All subsequent calls return false until refractory is released.
-    func tryAcceptImpulse(timestamp: TimeInterval) -> Bool {
+    /// Called every frame so release is explicit and observable
+    func update(timestamp: Double, sceneIsQuiet: Bool) {
 
-        switch state {
+        guard isLocked else { return }
 
-        case .ready:
-            state = .locked(until: timestamp + refractoryDuration)
-            quietFrameCount = 0
+        guard let last = lastImpulseTime else { return }
 
-            let deltaString: String = {
-                guard let last = lastAcceptedTimestamp else { return "n/a" }
-                return String(format: "%.3f", timestamp - last)
-            }()
+        let dt = timestamp - last
 
-            lastAcceptedTimestamp = timestamp
-
+        // Only release once:
+        // 1) enough time has passed
+        // 2) scene is no longer impulsive
+        if dt >= refractoryDuration && sceneIsQuiet {
+            isLocked = false
             Log.info(
                 .shot,
-                String(
-                    format: "refractory_locked t=%.3f until=%.3f Δt=%@",
-                    timestamp,
-                    timestamp + refractoryDuration,
-                    deltaString
-                )
+                String(format: "REFRACTORY_RELEASE t=%.3f", timestamp)
             )
-            return true
-
-        case .locked:
-            return false
         }
-    }
-
-    // -----------------------------------------------------------------
-    // MARK: - Introspection (DEBUG ONLY)
-    // -----------------------------------------------------------------
-
-    var isLocked: Bool {
-        if case .locked = state { return true }
-        return false
-    }
-
-    var lockedUntil: TimeInterval? {
-        if case .locked(let until) = state { return until }
-        return nil
     }
 }

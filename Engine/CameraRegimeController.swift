@@ -2,58 +2,93 @@
 //  CameraRegimeController.swift
 //  LaunchLab
 //
-//  Tracks camera photometric stability over time.
-//  Read-only signal used to REFUSE authority when unstable.
-//  Does NOT grant authority.
+//  Camera Regime OBSERVER (V1)
+//
+//  ROLE (STRICT):
+//  - Observe photometric / exposure stability over time
+//  - Emit a read-only stability signal
+//  - NEVER grant authority
+//  - Used only as a REFUSAL gate upstream of ShotLifecycleController
 //
 
 import Foundation
 
 final class CameraRegimeController {
 
+    // -----------------------------------------------------------
+    // MARK: - Regime State
+    // -----------------------------------------------------------
+
     enum Regime: String {
         case stable
         case unstable
     }
 
-    // MARK: - Parameters
+    // -----------------------------------------------------------
+    // MARK: - Parameters (CONSERVATIVE)
+// -----------------------------------------------------------
 
-    /// Minimum time camera must remain stable before trusted
+    /// Minimum time camera must remain stable before considered observable
     private let requiredStableDurationSec: Double = 0.30
 
-    // MARK: - State
+    // -----------------------------------------------------------
+    // MARK: - State (OBSERVATIONAL)
+    // -----------------------------------------------------------
 
     private(set) var regime: Regime = .unstable
     private var lastUnstableTime: Double?
-    private var lastStableTime: Double?
+    private var lastStableTransitionTime: Double?
 
-    // MARK: - Public API
+    // -----------------------------------------------------------
+    // MARK: - Public Observability
+    // -----------------------------------------------------------
 
+    /// Read-only observability signal.
+    /// TRUE means "not unstable for long enough".
+    /// FALSE means "cannot trust photometry yet".
     var isStable: Bool {
-        return regime == .stable
+        regime == .stable
     }
+
+    /// Reason string suitable for refusal logging.
+    var instabilityReason: String? {
+        guard regime == .unstable else { return nil }
+        return "camera_photometry_unstable"
+    }
+
+    // -----------------------------------------------------------
+    // MARK: - Lifecycle
+    // -----------------------------------------------------------
 
     func reset() {
         regime = .unstable
         lastUnstableTime = nil
-        lastStableTime = nil
+        lastStableTransitionTime = nil
     }
 
-    /// Called when a global photometric disturbance is observed
+    /// Called when a global photometric disturbance is observed.
+    /// This immediately invalidates observability.
     func markUnstable(at timestampSec: Double) {
+
+        // Avoid log spam if already unstable
+        if regime != .unstable {
+            Log.info(.camera, "camera_regime=unstable t=\(fmt(timestampSec))")
+        }
+
         regime = .unstable
         lastUnstableTime = timestampSec
-        lastStableTime = nil
+        lastStableTransitionTime = nil
     }
 
-    /// Called every frame; transitions to stable only after cooldown
+    /// Called every frame when no instability is observed.
+    /// Transitions to stable only after the required quiet window.
     func markStableIfEligible(at timestampSec: Double) {
 
         guard regime == .unstable else { return }
 
         guard let lastBad = lastUnstableTime else {
-            // No instability recorded yet → allow stabilization clock
-            lastStableTime = timestampSec
+            // No instability recorded yet; begin stability clock
+            lastStableTransitionTime = timestampSec
             return
         }
 
@@ -61,7 +96,19 @@ final class CameraRegimeController {
         guard dt >= requiredStableDurationSec else { return }
 
         regime = .stable
-        lastStableTime = timestampSec
-        Log.info(.shot, "[CAMERA] regime=stable")
+        lastStableTransitionTime = timestampSec
+
+        Log.info(
+            .camera,
+            "camera_regime=stable t=\(fmt(timestampSec)) quiet_sec=\(fmt(dt))"
+        )
+    }
+
+    // -----------------------------------------------------------
+    // MARK: - Formatting
+    // -----------------------------------------------------------
+
+    private func fmt(_ v: Double) -> String {
+        String(format: "%.3f", v)
     }
 }

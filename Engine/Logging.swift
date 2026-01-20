@@ -14,9 +14,21 @@ enum LogPhase: String {
 
 enum Log {
 
+    // -------------------------------------------------------------
+    // MARK: - Enabled Phases
+    // -------------------------------------------------------------
+
+    /// Offline + diagnostics mode
+    /// Truth-first, no suppression
     static var enabled: Set<LogPhase> = [
-        .detection
+        .shot,
+        .detection,
+        .authority
     ]
+
+    // -------------------------------------------------------------
+    // MARK: - Logging
+    // -------------------------------------------------------------
 
     @inline(__always)
     static func info(
@@ -25,5 +37,6 @@ enum Log {
     ) {
         guard enabled.contains(phase) else { return }
         Swift.print("[\(phase.rawValue.uppercased())] \(message())")
+        fflush(stdout)
     }
 }

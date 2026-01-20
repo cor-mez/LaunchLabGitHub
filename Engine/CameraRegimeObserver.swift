@@ -2,39 +2,69 @@
 //  CameraRegimeObserver.swift
 //  LaunchLab
 //
-//  Observes global photometric instability.
-//  Observational only.
+//  Camera Regime DISTURBANCE OBSERVER (V1)
+//
+//  ROLE (STRICT):
+//  - Observe global photometric disturbances
+//  - Emit instability events
+//  - NEVER determine stability or authority
+//  - All regime state lives in CameraRegimeController
 //
 
 import CoreVideo
 
 final class CameraRegimeObserver {
 
-    private var lastMeanLuma: Double?
+    // -----------------------------------------------------------
+    // MARK: - Tunables (OBSERVATIONAL)
+    // -----------------------------------------------------------
+
     private let maxDeltaLuma: Double = 8.0
 
-    private(set) var isStable: Bool = true
+    // -----------------------------------------------------------
+    // MARK: - State
+    // -----------------------------------------------------------
+
+    private var lastMeanLuma: Double?
+
+    // -----------------------------------------------------------
+    // MARK: - Lifecycle
+    // -----------------------------------------------------------
 
     func reset() {
         lastMeanLuma = nil
-        isStable = true
     }
 
-    func observe(pixelBuffer: CVPixelBuffer) {
+    /// Observes a frame and returns whether a photometric disturbance occurred.
+    /// This function NEVER decides stability — only emits events.
+    func observe(pixelBuffer: CVPixelBuffer) -> Bool {
 
         let mean = computeMeanLuma(pb: pixelBuffer)
 
-        if let last = lastMeanLuma {
-            let delta = abs(mean - last)
-            if delta > maxDeltaLuma {
-                isStable = false
-            }
+        defer { lastMeanLuma = mean }
+
+        guard let last = lastMeanLuma else {
+            return false
         }
 
-        lastMeanLuma = mean
+        let delta = abs(mean - last)
+        if delta > maxDeltaLuma {
+            Log.info(
+                .camera,
+                String(format: "camera_luma_jump delta=%.2f", delta)
+            )
+            return true
+        }
+
+        return false
     }
 
+    // -----------------------------------------------------------
+    // MARK: - Luma Computation (SAMPLED)
+    // -----------------------------------------------------------
+
     private func computeMeanLuma(pb: CVPixelBuffer) -> Double {
+
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
 
@@ -47,6 +77,7 @@ final class CameraRegimeObserver {
         var sum: UInt64 = 0
         var count: UInt64 = 0
 
+        // Subsample aggressively — this is global, not per-pixel
         for y in stride(from: 0, to: height, by: 4) {
             let row = base.advanced(by: y * bytesPerRow)
             for x in stride(from: 0, to: width, by: 4) {

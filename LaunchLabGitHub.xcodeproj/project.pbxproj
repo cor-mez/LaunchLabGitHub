@@ -29,6 +29,18 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		F44FD2352F1F2F2800D161AA /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LaunchLabGitHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LaunchLabGitHubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -37,9 +49,23 @@
 		05D0AC8F2EEE18B4002B7EFE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		05F8339B2ECAFA320053B9D5 /* LaunchLab.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LaunchLab.xcconfig; sourceTree = "<group>"; };
 		05F8339F2ECB00280053B9D5 /* LaunchLabGithub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LaunchLabGithub.entitlements; sourceTree = "<group>"; };
+		F44FD2372F1F2F2800D161AA /* LaunchLabOffline */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = LaunchLabOffline; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F44FD23F2F1F2F5B00D161AA /* Exceptions for "Engine" folder in "LaunchLabOffline" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Logging.swift,
+				OfflineVideoRunner.swift,
+				RefractoryGate.swift,
+				RollingShutterDetectorV2.swift,
+				RSResult.swift,
+				VisionPipeline.swift,
+				VisionTypes.swift,
+			);
+			target = F44FD2362F1F2F2800D161AA /* LaunchLabOffline */;
+		};
 		F4BD88892EFA598C00DE7839 /* Exceptions for "info" folder in "LaunchLabGitHub" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -65,7 +91,15 @@
 		};
 		05F833642ECAF8450053B9D5 /* Engine */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F44FD23F2F1F2F5B00D161AA /* Exceptions for "Engine" folder in "LaunchLabOffline" target */,
+			);
 			path = Engine;
+			sourceTree = "<group>";
+		};
+		F44FD2382F1F2F2800D161AA /* LaunchLabOffline */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LaunchLabOffline;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -92,6 +126,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F44FD2342F1F2F2800D161AA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -108,6 +149,8 @@
 				05545A5F2ECDA1B70083046E /* LaunchLabGitHub.app */,
 				05545A602ECDA1B70083046E /* LaunchLabGitHubTests.xctest */,
 				05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */,
+				F44FD2372F1F2F2800D161AA /* LaunchLabOffline */,
+				F44FD2382F1F2F2800D161AA /* LaunchLabOffline */,
 			);
 			sourceTree = "<group>";
 		};
@@ -178,6 +221,28 @@
 			productReference = 05545A612ECDA1B70083046E /* LaunchLabGitHubUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		F44FD2362F1F2F2800D161AA /* LaunchLabOffline */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F44FD23B2F1F2F2800D161AA /* Build configuration list for PBXNativeTarget "LaunchLabOffline" */;
+			buildPhases = (
+				F44FD2332F1F2F2800D161AA /* Sources */,
+				F44FD2342F1F2F2800D161AA /* Frameworks */,
+				F44FD2352F1F2F2800D161AA /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F44FD2382F1F2F2800D161AA /* LaunchLabOffline */,
+			);
+			name = LaunchLabOffline;
+			packageProductDependencies = (
+			);
+			productName = LaunchLabOffline;
+			productReference = F44FD2372F1F2F2800D161AA /* LaunchLabOffline */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -185,7 +250,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1620;
+				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 1620;
 				TargetAttributes = {
 					05F833262ECAF77B0053B9D5 = {
@@ -198,6 +263,9 @@
 					05F833412ECAF77D0053B9D5 = {
 						CreatedOnToolsVersion = 16.2;
 						TestTargetID = 05F833262ECAF77B0053B9D5;
+					};
+					F44FD2362F1F2F2800D161AA = {
+						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
@@ -218,6 +286,7 @@
 				05F833262ECAF77B0053B9D5 /* LaunchLabGitHub */,
 				05F833372ECAF77D0053B9D5 /* LaunchLabGitHubTests */,
 				05F833412ECAF77D0053B9D5 /* LaunchLabGitHubUITests */,
+				F44FD2362F1F2F2800D161AA /* LaunchLabOffline */,
 			);
 		};
 /* End PBXProject section */
@@ -265,6 +334,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		05F8333E2ECAF77D0053B9D5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F44FD2332F1F2F2800D161AA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -344,6 +420,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACH_O_TYPE = mh_execute;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -404,6 +481,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACH_O_TYPE = mh_execute;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -615,6 +693,36 @@
 			};
 			name = Release;
 		};
+		F44FD23C2F1F2F2800D161AA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NKNPC9JY55;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F44FD23D2F1F2F2800D161AA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NKNPC9JY55;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -650,6 +758,15 @@
 			buildConfigurations = (
 				05F833532ECAF77D0053B9D5 /* Debug */,
 				05F833542ECAF77D0053B9D5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F44FD23B2F1F2F2800D161AA /* Build configuration list for PBXNativeTarget "LaunchLabOffline" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F44FD23C2F1F2F2800D161AA /* Debug */,
+				F44FD23D2F1F2F2800D161AA /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

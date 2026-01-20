@@ -2,25 +2,26 @@
 //  ShotAuthorityGate.swift
 //  LaunchLab
 //
-//  Shot Authority Gate (V1)
+//  Shot Eligibility Gate (V1)
 //
-//  Role:
-//  - Decide if the system is allowed to declare a shot start.
-//  - Binary decisions only; no scoring.
-//  - Logs transitions only (no per-frame spam).
+//  ROLE (STRICT):
+//  - Determine whether conditions are sufficient to BEGIN a shot lifecycle.
+//  - NEVER authorize or finalize a shot.
+//  - Binary eligibility only.
+//  - Safe to call every frame.
+//  - All authority lives in ShotLifecycleController.
 //
 
 import Foundation
 
-// MARK: - Output
+// MARK: - Eligibility Output (NON-AUTHORITATIVE)
 
-enum ShotAuthorityDecision: Equatable {
-    case notArmed(reason: String)
-    case armed
-    case authorized
+enum ShotEligibilityDecision: Equatable {
+    case ineligible(reason: String)
+    case eligible
 }
 
-// MARK: - Lifecycle State Input (context authority)
+// MARK: - Lifecycle Context (READ-ONLY)
 
 enum ShotAuthorityLifecycleState: String, Equatable {
     case idle
@@ -57,136 +58,126 @@ struct ShotAuthorityGateConfig: Equatable {
 struct ShotAuthorityGateInput: Equatable {
     let timestampSec: Double
     let ballLockConfidence: Float
-    let clusterCompactness: Double?
     let instantaneousPxPerSec: Double
     let motionPhase: MotionDensityPhase
     let framesSinceIdle: Int
     let lifecycleState: ShotAuthorityLifecycleState
 }
 
-// MARK: - Gate
+// MARK: - Gate (ELIGIBILITY ONLY)
 
 final class ShotAuthorityGate {
 
     private enum GateState: Equatable {
-        case notArmed(reason: String)
+        case idle(reason: String)
         case armed
     }
 
     private let config: ShotAuthorityGateConfig
 
-    private var state: GateState = .notArmed(reason: "boot")
-    private var lastAuthorizedTimestampSec: Double?
-
+    private var state: GateState = .idle(reason: "boot")
+    private var lastEligibilityTimestampSec: Double?
     private var motionFramesAboveThreshold: Int = 0
-    private var blockedLoggedThisCycle: Bool = false
 
     init(config: ShotAuthorityGateConfig = ShotAuthorityGateConfig()) {
         self.config = config
     }
 
     func reset() {
-        state = .notArmed(reason: "reset")
-        lastAuthorizedTimestampSec = nil
+        state = .idle(reason: "reset")
+        lastEligibilityTimestampSec = nil
         motionFramesAboveThreshold = 0
-        blockedLoggedThisCycle = false
     }
 
-    func update(_ input: ShotAuthorityGateInput) -> ShotAuthorityDecision {
+    /// Returns eligibility ONLY.
+    /// This gate never authorizes or finalizes a shot.
+    func update(_ input: ShotAuthorityGateInput) -> ShotEligibilityDecision {
 
-        let cooldownElapsed: Bool = {
-            guard let last = lastAuthorizedTimestampSec else { return true }
-            return (input.timestampSec - last) >= config.cooldownSec
-        }()
-
-        let idleEnough = input.framesSinceIdle >= config.minIdleFramesToArm
-        let lifecycleIdle = (input.lifecycleState == .idle)
-
-        if !lifecycleIdle {
-            disarmIfNeeded(reason: "lifecycle_in_progress", t: input.timestampSec)
-            return .notArmed(reason: "lifecycle_in_progress")
+        // -------------------------------------------------------
+        // Lifecycle must be idle to consider eligibility
+        // -------------------------------------------------------
+        guard input.lifecycleState == .idle else {
+            disarm(reason: "lifecycle_in_progress", t: input.timestampSec)
+            return .ineligible(reason: "lifecycle_in_progress")
         }
 
+        // -------------------------------------------------------
+        // Cooldown gate
+        // -------------------------------------------------------
+        if let last = lastEligibilityTimestampSec,
+           (input.timestampSec - last) < config.cooldownSec {
+            return .ineligible(reason: "cooldown_active")
+        }
+
+        // -------------------------------------------------------
+        // Idle arming requirement
+        // -------------------------------------------------------
+        let idleEnough = input.framesSinceIdle >= config.minIdleFramesToArm
+
         switch state {
-        case .notArmed:
-            if cooldownElapsed && idleEnough {
+        case .idle:
+            if idleEnough {
                 arm(t: input.timestampSec, idleFrames: input.framesSinceIdle)
+            } else {
+                return .ineligible(reason: "insufficient_idle")
             }
+
         case .armed:
             break
         }
 
-        if case .armed = state {
+        // -------------------------------------------------------
+        // Armed: check eligibility evidence
+        // -------------------------------------------------------
 
-            let presenceOK = input.ballLockConfidence >= config.presenceConfidenceThreshold
-            let motionOK = input.instantaneousPxPerSec >= config.minMotionPxPerSec
-            let motionNonIdle = (input.motionPhase != .idle)
+        let presenceOK = input.ballLockConfidence >= config.presenceConfidenceThreshold
+        let motionOK = input.instantaneousPxPerSec >= config.minMotionPxPerSec
+        let motionNonIdle = (input.motionPhase != .idle)
 
-            if presenceOK && motionOK && motionNonIdle {
-                motionFramesAboveThreshold += 1
+        if presenceOK && motionOK && motionNonIdle {
+            motionFramesAboveThreshold += 1
 
-                if motionFramesAboveThreshold >= config.requiredMotionFrames {
-                    lastAuthorizedTimestampSec = input.timestampSec
-                    motionFramesAboveThreshold = 0
+            if motionFramesAboveThreshold >= config.requiredMotionFrames {
 
-                    Log.info(
-                        .authority,
-                        "authorized t=\(fmt(input.timestampSec)) conf=\(fmt(input.ballLockConfidence)) px_s=\(fmt(input.instantaneousPxPerSec))"
-                    )
-
-                    disarm(reason: "authorized", t: input.timestampSec)
-                    return .authorized
-                }
-
-                return .armed
-            }
-
-            if motionFramesAboveThreshold > 0 && !motionOK {
-                if !blockedLoggedThisCycle {
-                    blockedLoggedThisCycle = true
-                    Log.info(
-                        .authority,
-                        "blocked reason=persistence_failed frames=\(motionFramesAboveThreshold)"
-                    )
-                }
+                lastEligibilityTimestampSec = input.timestampSec
                 motionFramesAboveThreshold = 0
+
+                Log.info(
+                    .authority,
+                    "eligible_for_shot t=\(fmt(input.timestampSec)) conf=\(fmt(input.ballLockConfidence)) px_s=\(fmt(input.instantaneousPxPerSec))"
+                )
+
+                disarm(reason: "eligibility_emitted", t: input.timestampSec)
+                return .eligible
             }
 
-            return .armed
+            return .ineligible(reason: "awaiting_persistence")
         }
 
-        return .notArmed(reason: "not_armed")
+        // Reset persistence if motion falls away
+        motionFramesAboveThreshold = 0
+        return .ineligible(reason: "conditions_not_met")
     }
 
     // MARK: - Transitions
 
     private func arm(t: Double, idleFrames: Int) {
         state = .armed
-        blockedLoggedThisCycle = false
         motionFramesAboveThreshold = 0
 
         Log.info(
             .authority,
-            "armed t=\(fmt(t)) idleFrames=\(idleFrames)"
+            "eligibility_armed t=\(fmt(t)) idleFrames=\(idleFrames)"
         )
     }
 
-    private func disarmIfNeeded(reason: String, t: Double) {
-        if case .armed = state {
-            disarm(reason: reason, t: t)
-        } else {
-            state = .notArmed(reason: reason)
-        }
-    }
-
     private func disarm(reason: String, t: Double) {
-        state = .notArmed(reason: reason)
+        state = .idle(reason: reason)
         motionFramesAboveThreshold = 0
-        blockedLoggedThisCycle = false
 
         Log.info(
             .authority,
-            "disarmed t=\(fmt(t)) reason=\(reason)"
+            "eligibility_disarmed t=\(fmt(t)) reason=\(reason)"
         )
     }
 

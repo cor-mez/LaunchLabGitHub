@@ -2,8 +2,9 @@
 //  VisionPipeline.swift
 //  LaunchLab
 //
-//  Path A — RS derivative impulse → ball emergence
-//  FULL OBSERVABILITY BUILD
+//  RS-first observability pipeline.
+//  No ball assumptions. No marker dependency.
+//  Answers only: did the sensor see a coherent RS event?
 //
 
 import Foundation
@@ -12,8 +13,11 @@ import CoreVideo
 
 final class VisionPipeline {
 
-    private let markerDetector = MarkerDetectorV1()
-    private let rsDetector = RollingShutterDetectorV1()
+    // -------------------------------------------------------------
+    // MARK: - Dependencies
+    // -------------------------------------------------------------
+
+    private let rsDetector = RollingShutterDetectorV2()
     private let refractoryGate = RefractoryGate()
 
     // -------------------------------------------------------------
@@ -22,31 +26,32 @@ final class VisionPipeline {
 
     private enum Phase: CustomStringConvertible {
         case idle
-        case impulseDetected(at: Double)
-        case awaitingEmergence(start: Double)
-        case confirmed
+        case rsCandidate(timestamp: Double)
+        case confirmed(timestamp: Double)
 
         var description: String {
             switch self {
             case .idle: return "idle"
-            case .impulseDetected: return "impulseDetected"
-            case .awaitingEmergence: return "awaitingEmergence"
+            case .rsCandidate: return "rsCandidate"
             case .confirmed: return "confirmed"
             }
         }
     }
 
     private var phase: Phase = .idle
-    private var lastBallCentroid: CGPoint?
-    private var emergenceFrames: Int = 0
 
     // -------------------------------------------------------------
-    // MARK: - Tunables (LOCKED)
+    // MARK: - Tunables (LOCKED FOR DIAGNOSIS)
     // -------------------------------------------------------------
 
-    private let emergenceWindowSec: Double = 0.040
-    private let minEmergenceFrames: Int = 2
-    private let minBallMotionPx: CGFloat = 3.0
+    /// Minimum row coherence to consider RS localized
+    private let minRowAdjCorrelation: Float = 0.55
+
+    /// Maximum allowed flicker banding dominance
+    private let maxBandingScore: Float = 8_000
+
+    /// Refractory window controlled elsewhere
+    /// No time decay logic here
 
     // -------------------------------------------------------------
     // MARK: - Reset
@@ -54,8 +59,6 @@ final class VisionPipeline {
 
     func reset() {
         phase = .idle
-        lastBallCentroid = nil
-        emergenceFrames = 0
         rsDetector.reset()
         refractoryGate.reset(reason: "pipeline_reset")
     }
@@ -73,16 +76,12 @@ final class VisionPipeline {
         let w = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
         let h = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
+        // ROI intentionally large and permissive
         let roiRect = CGRect(
-            x: w * 0.20,
-            y: h * 0.35,
-            width: w * 0.60,
-            height: h * 0.45
-        )
-
-        let marker = markerDetector.detect(
-            pixelBuffer: pixelBuffer,
-            roi: roiRect
+            x: w * 0.15,
+            y: h * 0.25,
+            width: w * 0.70,
+            height: h * 0.50
         )
 
         let rs = rsDetector.analyze(
@@ -92,96 +91,102 @@ final class VisionPipeline {
         )
 
         // ---------------------------------------------------------
-        // 🔍 PER-FRAME RS SNAPSHOT (UNCONDITIONAL)
+        // 🔍 PER-FRAME OBSERVABILITY LOG (ALWAYS ON)
         // ---------------------------------------------------------
 
         Log.info(
             .shot,
             String(
                 format:
-                "RS_FRAME t=%.3f phase=%@ z=%.2f dz=%.2f impulse=%d reject=%@",
+                "RS_FRAME t=%.3f phase=%@ z=%.2f dz=%.2f rowCorr=%.2f band=%.0f impulse=%d reject=%@",
                 timestamp,
                 phase.description,
                 rs.zmax,
                 rs.dz,
+                rs.rowAdjCorrelation,
+                rs.bandingScore,
                 rs.isImpulse ? 1 : 0,
                 rs.rejectionReason
             )
         )
 
         // ---------------------------------------------------------
-        // Phase Machine (Path A)
+        // Phase Machine
         // ---------------------------------------------------------
 
         switch phase {
 
         case .idle:
+
+            // Accept ONLY if RS structure passes observability gates
             if rs.isImpulse,
+               rs.rowAdjCorrelation >= minRowAdjCorrelation,
+               rs.bandingScore <= maxBandingScore,
                refractoryGate.tryAcceptImpulse(timestamp: timestamp) {
 
                 Log.info(
                     .shot,
                     String(
-                        format: "IMPULSE_ACCEPTED t=%.3f z=%.2f dz=%.2f",
-                        timestamp, rs.zmax, rs.dz
+                        format:
+                        "RS_CANDIDATE_ACCEPTED t=%.3f rowCorr=%.2f band=%.0f",
+                        timestamp,
+                        rs.rowAdjCorrelation,
+                        rs.bandingScore
                     )
                 )
 
-                phase = .impulseDetected(at: timestamp)
+                phase = .rsCandidate(timestamp: timestamp)
             }
 
-        case .impulseDetected(let t0):
-            phase = .awaitingEmergence(start: t0)
-            emergenceFrames = 0
-            lastBallCentroid = nil
-            Log.info(.shot, "PHASE → awaitingEmergence")
+        case .rsCandidate(let t0):
 
-        case .awaitingEmergence(let start):
+            // One-frame confirmation only — no emergence logic
+            // We are confirming *sensor structure*, not object tracking
 
-            if timestamp - start > emergenceWindowSec {
-                Log.info(.shot, "GHOST_REJECT reason=no_ball_emergence")
-                phase = .confirmed
-                break
-            }
+            if rs.rowAdjCorrelation >= minRowAdjCorrelation &&
+               rs.bandingScore <= maxBandingScore {
 
-            if let m = marker {
-                if let last = lastBallCentroid {
-                    let d = hypot(m.center.x - last.x,
-                                  m.center.y - last.y)
-                    if d >= minBallMotionPx {
-                        emergenceFrames += 1
-                        Log.info(
-                            .shot,
-                            String(format: "BALL_MOTION d=%.2f frames=%d",
-                                   d, emergenceFrames)
-                        )
-                    }
-                }
-                lastBallCentroid = m.center
-            }
+                Log.info(
+                    .shot,
+                    String(format: "RS_EVENT_CONFIRMED t=%.3f", t0)
+                )
 
-            if emergenceFrames >= minEmergenceFrames {
-                Log.info(.shot, "SHOT_CONFIRMED")
-                phase = .confirmed
+                phase = .confirmed(timestamp: t0)
+            } else {
+                Log.info(
+                    .shot,
+                    String(
+                        format:
+                        "RS_EVENT_REJECTED t=%.3f reason=rowCorr=%.2f band=%.0f",
+                        t0,
+                        rs.rowAdjCorrelation,
+                        rs.bandingScore
+                    )
+                )
+                phase = .idle
             }
 
         case .confirmed:
+            // Hold until refractory releases
             break
         }
 
         // ---------------------------------------------------------
-        // Refractory update (NO phase reset here)
+        // Refractory update (no silent phase reset)
         // ---------------------------------------------------------
 
         refractoryGate.update(
             timestamp: timestamp,
-            sceneIsQuiet: marker == nil && !rs.isImpulse
+            sceneIsQuiet: !rs.isImpulse
         )
 
-        // Only reset AFTER terminal phase + refractory released
-        if case .confirmed = phase, !refractoryGate.isLocked {
-            Log.info(.shot, "PHASE → idle (refractory released)")
-            phase = .idle
+        if !refractoryGate.isLocked {
+            if case .idle = phase {
+                // already idle, no-op
+            } else {
+                Log.info(.shot, "PHASE → idle (refractory released)")
+                phase = .idle
+            }
         }
 
         return VisionFrameData(

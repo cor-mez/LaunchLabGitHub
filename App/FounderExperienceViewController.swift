@@ -1,5 +1,13 @@
 //
 //  FounderExperienceViewController.swift
+//  LaunchLab
+//
+//  Founder Experience UI (V1)
+//
+//  ROLE (STRICT):
+//  - Visualize live capture and observational telemetry
+//  - Display shot outcomes ONLY if emitted by Engine authority
+//  - NEVER infer, finalize, or simulate shot results
 //
 
 import UIKit
@@ -11,17 +19,24 @@ final class FounderExperienceViewController: UIViewController,
                                              CameraFrameDelegate,
                                              FounderTelemetryObserver {
 
-    // MARK: - Core Systems
+    // -----------------------------------------------------------
+    // MARK: - Core Systems (OBSERVATION ONLY)
+    // -----------------------------------------------------------
+
     private let camera = CameraCapture()
     private let previewView = FounderPreviewView(frame: .zero, device: nil)
     private let lifecycleHUD = ShotLifecycleHUDView()
-    // MARK: - UI
+
+    // -----------------------------------------------------------
+    // MARK: - UI (NON-AUTHORITATIVE)
+    // -----------------------------------------------------------
+
     private let summaryView = ShotSummaryView()
     private let historyView = SessionHistoryView()
 
     private let instructionLabel: UILabel = {
         let l = UILabel()
-        l.text = "Founder Test Geometry: place ball in ROI and hit"
+        l.text = "Founder Mode: observe capture & refusal behavior"
         l.textColor = .white
         l.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold)
         l.textAlignment = .center
@@ -29,7 +44,10 @@ final class FounderExperienceViewController: UIViewController,
         return l
     }()
 
+    // -----------------------------------------------------------
     // MARK: - Lifecycle
+    // -----------------------------------------------------------
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
@@ -78,20 +96,27 @@ final class FounderExperienceViewController: UIViewController,
             historyView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         ])
 
-        // MARK: - Mode / Coordinator Wiring
+        // -------------------------------------------------------
+        // MARK: - Mode Flags (NON-AUTHORITATIVE)
+        // -------------------------------------------------------
+
         DotTestMode.shared.previewEnabled = true
-        DotTestMode.shared.isArmedForDetection = true
+        DotTestMode.shared.isArmedForDetection = false
         DotTestMode.shared.founderTestModeEnabled = true
 
-        // MARK: - Camera
+        // -------------------------------------------------------
+        // MARK: - Camera (OBSERVABILITY)
+        // -------------------------------------------------------
+
         camera.delegate = self
         camera.start()
+        camera.lockCameraForMeasurement(targetFPS: 120)
     }
-
 
     // =====================================================================
     // MARK: - CameraFrameDelegate
     // =====================================================================
+
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
     }
@@ -100,18 +125,19 @@ final class FounderExperienceViewController: UIViewController,
     // MARK: - FounderTelemetryObserver
     // =====================================================================
 
-    /// Per-frame telemetry (DO NOT update summary view here)
+    /// Per-frame telemetry — observational only
     func didUpdateFounderTelemetry(_ telemetry: FounderFrameTelemetry) {
         // Intentionally empty.
-        // Overlay + preview are already handled by the coordinator.
+        // FounderPreviewView already reflects observational overlays.
     }
 
-    /// Shot completion only — THIS updates metrics
+    /// Shot completion — ONLY if emitted by Engine authority
     func didCompleteShot(
         _ summary: ShotSummary,
         history: [ShotRecord],
         summaries: [ShotSummary]
     ) {
+        // Defensive: Founder UI does not fabricate or infer shots.
         summaryView.update(with: summary)
         historyView.update(with: history, summaries: summaries)
     }

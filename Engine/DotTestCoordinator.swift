@@ -2,10 +2,12 @@
 //  DotTestCoordinator.swift
 //  LaunchLab
 //
-//  Rolling-Shutter Measurement Harness v4
+//  Rolling-Shutter Measurement Harness v5
 //
-//  NO DETECTION. NO AUTHORITY.
-//  RS OBSERVABILITY ONLY.
+//  OBSERVATION + WIRING ONLY
+//  - No detection
+//  - No authority
+//  - Feeds ShotLifecycleController with explicit evidence
 //
 
 import CoreMedia
@@ -16,26 +18,55 @@ final class DotTestCoordinator {
 
     static let shared = DotTestCoordinator()
 
+    // -----------------------------------------------------------
+    // Core Observers
+    // -----------------------------------------------------------
+
     private let detector = MetalDetector.shared
     private let rsProbe = RollingShutterProbe()
     private let rsFilter = RSGatedPointFilter()
     private let stats = RollingShutterSessionStats()
 
-    // Overlay only
+    // -----------------------------------------------------------
+    // Authority Spine (SINGULAR)
+    // -----------------------------------------------------------
+
+    private let shotAuthority = ShotLifecycleController()
+    private let eligibilityGate = ShotAuthorityGate()
+    private let impulseObserver = ImpactImpulseAuthority()
+
+    // -----------------------------------------------------------
+    // Cadence Estimation (OBSERVABILITY)
+    // -----------------------------------------------------------
+
+    private let cadenceEstimator = CadenceEstimator()
+
+    // -----------------------------------------------------------
+    // Overlay / Debug (NON-AUTHORITATIVE)
+    // -----------------------------------------------------------
+
     private(set) var debugROI: CGRect = .zero
     private(set) var debugFullSize: CGSize = .zero
     private(set) var debugBallLocked: Bool = false
     private(set) var debugConfidence: Float = 0
 
-    // Harness controls
+    // -----------------------------------------------------------
+    // Harness Controls
+    // -----------------------------------------------------------
+
     var baselineModeEnabled: Bool = true
     private let minBaselineFrames: Int = 60
     private let eventZThreshold: Double = 4.0
 
     private let detectionInterval = 2
     private var frameIndex = 0
+    private var framesSinceIdle: Int = 0
 
     private init() {}
+
+    // -----------------------------------------------------------
+    // Baseline Reset
+    // -----------------------------------------------------------
 
     func resetBaseline() {
         stats.resetBaseline()
@@ -43,7 +74,16 @@ final class DotTestCoordinator {
         Log.info(.detection, "rs baseline reset")
     }
 
+    // -----------------------------------------------------------
+    // Frame Processing (OBSERVATION → AUTHORITY INPUT)
+    // -----------------------------------------------------------
+
     func processFrame(_ pb: CVPixelBuffer, timestamp: CMTime) {
+
+        let tSec = CMTimeGetSeconds(timestamp)
+
+        // Cadence observability
+        cadenceEstimator.push(timestamp: tSec)
 
         frameIndex += 1
         guard frameIndex % detectionInterval == 0 else { return }
@@ -73,95 +113,111 @@ final class DotTestCoordinator {
 
             self.detector.gpuFast9ScoredCornersY { metalPoints in
 
-                // Metal → CGPoint (ONLY type boundary)
                 let rawPoints: [CGPoint] = metalPoints.map { $0.point }
-
-                // RS geometric filter
                 let filtPoints: [CGPoint] = self.rsFilter.filter(points: rawPoints)
 
-                guard let rs = self.rsProbe.evaluate(
+                // ---------------------------------------------------
+                // RS OBSERVATION
+                // ---------------------------------------------------
+
+                let rsObservation = self.rsProbe.evaluate(
                     points: filtPoints,
                     roi: roi
-                ) else {
+                )
+
+                let rsObservable = (rsObservation != nil)
+
+                if !rsObservable {
                     Log.info(
                         .detection,
                         "rs=no_signal raw=\(rawPoints.count) filt=\(filtPoints.count)"
                     )
-                    return
                 }
 
-                let sample = RSFeatureSample(
-                    slope: rs.rowSlope,
-                    r2: rs.rowSlopeR2,
-                    nonu: rs.rowNonuniformity,
-                    lw: rs.streakLW,
-                    edge: rs.edgeStraightness,
-                    rawCount: Double(rawPoints.count),
-                    filtCount: Double(filtPoints.count)
-                )
+                // ---------------------------------------------------
+                // Baseline + Z-score (OBSERVATIONAL ONLY)
+                // ---------------------------------------------------
 
-                // Baseline collection
-                if self.baselineModeEnabled {
-                    self.stats.addBaseline(sample)
+                if let rs = rsObservation {
 
-                    if self.stats.hasBaseline(minCount: self.minBaselineFrames) {
-                        self.baselineModeEnabled = false
-                        Log.info(
-                            .detection,
-                            "rs baseline locked | \(self.stats.baselineSummary())"
-                        )
-                    }
-                }
-
-                // Z-score logging
-                if let z = self.stats.zScores(for: sample) {
-
-                    Log.info(
-                        .detection,
-                        String(
-                            format:
-                            "rs slope=%.4f r2=%.2f nonu=%.2f lw=%.2f edge=%.2f raw=%d filt=%d | zmax=%.2f",
-                            sample.slope,
-                            sample.r2,
-                            sample.nonu,
-                            sample.lw,
-                            sample.edge,
-                            Int(sample.rawCount),
-                            Int(sample.filtCount),
-                            z.maxAbs
-                        )
+                    let sample = RSFeatureSample(
+                        slope: rs.rowSlope,
+                        r2: rs.rowSlopeR2,
+                        nonu: rs.rowNonuniformity,
+                        lw: rs.streakLW,
+                        edge: rs.edgeStraightness,
+                        rawCount: Double(rawPoints.count),
+                        filtCount: Double(filtPoints.count)
                     )
 
-                    if z.maxAbs >= self.eventZThreshold {
+                    if self.baselineModeEnabled {
+                        self.stats.addBaseline(sample)
+
+                        if self.stats.hasBaseline(minCount: self.minBaselineFrames) {
+                            self.baselineModeEnabled = false
+                            Log.info(
+                                .detection,
+                                "rs baseline locked | \(self.stats.baselineSummary())"
+                            )
+                        }
+                    }
+
+                    if let z = self.stats.zScores(for: sample) {
                         Log.info(
                             .detection,
                             String(
                                 format:
-                                "rs EVENT_CAND zmax=%.2f raw=%d filt=%d",
+                                "rs zmax=%.2f raw=%d filt=%d",
                                 z.maxAbs,
                                 Int(sample.rawCount),
                                 Int(sample.filtCount)
                             )
                         )
                     }
-
-                } else {
-                    Log.info(
-                        .detection,
-                        String(
-                            format:
-                            "rs slope=%.4f r2=%.2f nonu=%.2f lw=%.2f edge=%.2f raw=%d filt=%d | baseline n=%d",
-                            sample.slope,
-                            sample.r2,
-                            sample.nonu,
-                            sample.lw,
-                            sample.edge,
-                            Int(sample.rawCount),
-                            Int(sample.filtCount),
-                            self.stats.baselineCount
-                        )
-                    )
                 }
+
+                // ---------------------------------------------------
+                // MOTION / ELIGIBILITY (STUB SIGNALS)
+                // ---------------------------------------------------
+
+                let lifecycleState: ShotAuthorityLifecycleState =
+                    (self.shotAuthority.state == .idle) ? .idle : .inProgress
+
+                let eligibilityDecision = self.eligibilityGate.update(
+                    ShotAuthorityGateInput(
+                        timestampSec: tSec,
+                        ballLockConfidence: self.debugConfidence,
+                        instantaneousPxPerSec: 0, // stubbed
+                        motionPhase: .idle,       // stubbed
+                        framesSinceIdle: self.framesSinceIdle,
+                        lifecycleState: lifecycleState
+                    )
+                )
+
+                let eligibleForShot =
+                    (eligibilityDecision == .eligible)
+
+                if eligibleForShot {
+                    self.impulseObserver.armObservationWindow()
+                }
+
+                // ---------------------------------------------------
+                // AUTHORITY INPUT (REFUSAL-FIRST)
+                // ---------------------------------------------------
+
+                let authorityInput = ShotLifecycleInput(
+                    timestampSec: tSec,
+                    captureValid: self.cadenceEstimator.estimatedFPS >= 90,
+                    rsObservable: rsObservable,
+                    eligibleForShot: eligibleForShot,
+                    confirmedByUpstream: false, // acceptance frozen
+                    ballLockConfidence: self.debugConfidence,
+                    motionDensityPhase: .idle,
+                    ballSpeedPxPerSec: nil,
+                    refusalReason: nil
+                )
+
+                _ = self.shotAuthority.update(authorityInput)
             }
         }
     }
