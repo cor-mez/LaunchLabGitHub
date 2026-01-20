@@ -2,28 +2,44 @@
 //  SeparationAuthorityGate.swift
 //  LaunchLab
 //
-//  Authoritative confirmation of ballistic flight.
-//  THIS is the only gate allowed to authorize a shot.
+//  Separation Observability Module (V1)
+//
+//  ROLE (STRICT):
+//  - Measure post-impact ballistic separation characteristics
+//  - Produce observational evidence only
+//  - NEVER authorize, confirm, or finalize a shot
 //
 
 import Foundation
 import CoreGraphics
 
+/// Observational separation evidence.
+/// Carries structured facts across multiple frames.
+struct SeparationEvidence {
+
+    let framesObserved: Int
+    let speedPxPerSec: Double
+    let escapeDistancePx: Double
+    let directionDot: Double
+    let cameraStable: Bool
+}
+
+/// Stateless separation observer.
+/// All state is per-attempt and reset externally.
 final class SeparationAuthorityGate {
 
-    // MARK: - Conservative V1 thresholds
+    // MARK: - Conservative V1 thresholds (OBSERVATIONAL)
 
     private let minFrames: Int = 3
     private let minSpeedPxPerSec: Double = 30.0
     private let minEscapePx: Double = 6.0
     private let maxDirectionFlipDot: Double = 0.6
 
-    // MARK: - State
+    // MARK: - State (OBSERVATIONAL ONLY)
 
     private var frames: Int = 0
     private var origin: CGPoint?
     private var lastDir: CGVector?
-    private var fired: Bool = false
 
     // MARK: - Reset
 
@@ -31,74 +47,66 @@ final class SeparationAuthorityGate {
         frames = 0
         origin = nil
         lastDir = nil
-        fired = false
     }
 
     // MARK: - Update
 
-    /// Returns true exactly once when separation is authoritative
-    func update(
+    /// Observe separation characteristics for the current frame.
+    /// Returns SeparationEvidence when minimum structure exists,
+    /// otherwise returns nil.
+    func observe(
         center: CGPoint,
         velocityPx: CGVector,
         speedPxPerSec: Double,
         cameraStable: Bool
-    ) -> Bool {
+    ) -> SeparationEvidence? {
 
-        guard !fired else { return false }
-
-        // --------------------------------------------------
-        // Camera instability veto (hint, not authority)
-        // --------------------------------------------------
-        guard cameraStable else {
-            Log.info(.shot, "[REFUSE] separation reason=camera_unstable")
+        // Camera stability is observed, not enforced
+        if !cameraStable {
+            Log.info(.shot, "[OBSERVE] separation camera_unstable")
             reset()
-            return false
+            return nil
         }
 
-        // --------------------------------------------------
-        // Speed gate
-        // --------------------------------------------------
+        // Speed gate (observational)
         guard speedPxPerSec >= minSpeedPxPerSec else {
             Log.info(
                 .shot,
-                "[REFUSE] separation reason=below_min_speed px_s=\(fmt1(speedPxPerSec))"
+                "[OBSERVE] separation below_min_speed px_s=\(fmt1(speedPxPerSec))"
             )
             reset()
-            return false
+            return nil
         }
 
         let dir = normalize(velocityPx)
 
-        // --------------------------------------------------
         // First-frame initialization
-        // --------------------------------------------------
         if origin == nil {
             origin = center
             lastDir = dir
             frames = 1
-            return false
+            return nil
         }
 
         frames += 1
 
-        // --------------------------------------------------
         // Direction coherence
-        // --------------------------------------------------
+        let dot: Double
         if let last = lastDir {
-            let dot = (dir.dx * last.dx) + (dir.dy * last.dy)
+            dot = Double((dir.dx * last.dx) + (dir.dy * last.dy))
             if dot < maxDirectionFlipDot {
                 Log.info(
                     .shot,
-                    "[REFUSE] separation reason=direction_flip dot=\(fmt2(dot))"
+                    "[OBSERVE] separation direction_flip dot=\(fmt2(dot))"
                 )
                 reset()
-                return false
+                return nil
             }
+        } else {
+            dot = 1.0
         }
 
-        // --------------------------------------------------
         // Spatial escape
-        // --------------------------------------------------
         let dx = center.x - origin!.x
         let dy = center.y - origin!.y
         let dist = hypot(dx, dy)
@@ -106,33 +114,38 @@ final class SeparationAuthorityGate {
         guard dist >= minEscapePx else {
             Log.info(
                 .shot,
-                "[REFUSE] separation reason=insufficient_escape dist=\(fmt2(dist))"
+                "[OBSERVE] separation insufficient_escape dist=\(fmt2(dist))"
             )
-            return false
+            return nil
         }
 
         lastDir = dir
 
-        // --------------------------------------------------
         // Frame accumulation
-        // --------------------------------------------------
         guard frames >= minFrames else {
             Log.info(
                 .shot,
-                "[REFUSE] separation reason=insufficient_frames frames=\(frames)"
+                "[OBSERVE] separation insufficient_frames frames=\(frames)"
             )
-            return false
+            return nil
         }
 
         // --------------------------------------------------
-        // AUTHORITATIVE SEPARATION
+        // OBSERVATIONAL OUTPUT (NO AUTHORITY)
         // --------------------------------------------------
-        fired = true
+
         Log.info(
             .shot,
-            "[SEPARATION] authoritative frames=\(frames) px_s=\(fmt1(speedPxPerSec))"
+            "[OBSERVE] separation frames=\(frames) px_s=\(fmt1(speedPxPerSec)) dist=\(fmt2(dist))"
         )
-        return true
+
+        return SeparationEvidence(
+            framesObserved: frames,
+            speedPxPerSec: speedPxPerSec,
+            escapeDistancePx: dist,
+            directionDot: dot,
+            cameraStable: cameraStable
+        )
     }
 
     // MARK: - Helpers

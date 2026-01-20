@@ -2,78 +2,67 @@
 //  PresenceContinuityLatch.swift
 //  LaunchLab
 //
-//  Purpose:
-//  Maintain object continuity across impact when presence
-//  becomes unobservable due to physics (impulse, RS shear, blur).
+//  Presence Continuity Observability (V1)
 //
-//  This is NOT authority.
-//  This does NOT detect shots.
-//  It only answers: "should we treat the next frames as belonging
-//  to the same physical object?"
+//  ROLE (STRICT):
+//  - Compute evidence about recent presence continuity
+//  - NEVER latch, confirm, or own time
+//  - NEVER emit phase or authority semantics
 //
 
 import Foundation
 
+/// Observational continuity evidence.
+/// Carries facts only.
+struct PresenceContinuityObservation {
+
+    let presenceFrames: Int
+    let eligibleToBridge: Bool
+}
+
+/// Stateless continuity observer.
+/// Caller owns all timing and lifecycle decisions.
 final class PresenceContinuityLatch {
 
     // MARK: - Configuration (OBSERVATIONAL)
 
-    /// Frames of confirmed presence required to arm latch
+    /// Frames of confirmed presence required to consider continuity viable
     private let minPresenceFrames: Int = 4
 
-    /// Max frames latch may remain active after impact
-    private let maxLatchedFrames: Int = 10
-
-    // MARK: - State
+    // MARK: - State (OBSERVATIONAL ONLY)
 
     private var presenceFrames: Int = 0
-    private var latchedFramesRemaining: Int = 0
-    private var latched: Bool = false
 
-    // MARK: - Public API
+    // MARK: - Reset
 
     func reset() {
         presenceFrames = 0
-        latchedFramesRemaining = 0
-        latched = false
     }
 
-    /// Call once per frame when presence is confirmed
-    func observePresence(present: Bool) {
+    // MARK: - Update
+
+    /// Observe presence this frame and return continuity evidence.
+    /// No state is retained beyond simple counting.
+    func observe(present: Bool) -> PresenceContinuityObservation {
+
         if present {
             presenceFrames += 1
         } else {
             presenceFrames = 0
         }
-    }
 
-    /// Arms latch if sufficient presence history exists
-    func canArm() -> Bool {
-        return presenceFrames >= minPresenceFrames
-    }
+        let eligible = presenceFrames >= minPresenceFrames
 
-    /// Triggered by an impact signature
-    func latch() {
-        guard canArm() else { return }
-        latched = true
-        latchedFramesRemaining = maxLatchedFrames
-
-        Log.info(.shot, "PHASE presence_latched frames=\(maxLatchedFrames)")
-    }
-
-    /// Call every frame post-impact
-    func tick() {
-        guard latched else { return }
-
-        latchedFramesRemaining -= 1
-        if latchedFramesRemaining <= 0 {
-            reset()
-            Log.info(.shot, "PHASE presence_latch_expired")
+        if eligible {
+            Log.info(
+                .shot,
+                "[OBSERVE] presence_continuity frames=\(presenceFrames)"
+            )
         }
-    }
 
-    /// Whether continuity should be assumed this frame
-    var isActive: Bool {
-        return latched
+        return PresenceContinuityObservation(
+            presenceFrames: presenceFrames,
+            eligibleToBridge: eligible
+        )
     }
 }

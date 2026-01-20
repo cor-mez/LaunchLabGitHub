@@ -2,31 +2,38 @@
 //  ShotLock.swift
 //  LaunchLab
 //
-//  V1: Single-shot authority latch
+//  Shot Lock Observability (V1)
+//
+//  ROLE (STRICT):
+//  - Capture per-frame impulse evidence
+//  - NEVER latch, block, or enforce single-shot behavior
+//  - Authority lives exclusively in ShotLifecycleController
 //
 
-struct ShotLock {
+import Foundation
 
-    private(set) var isLocked: Bool = false
-    private(set) var shotTimestamp: Double?
-    private(set) var shotZMax: Float?
+/// Observational impulse snapshot.
+/// Carries facts only.
+struct ShotLockObservation {
 
-    mutating func tryLock(
+    let timestamp: Double
+    let zMax: Float
+}
+
+/// Stateless helper for packaging impulse evidence.
+/// Does NOT enforce locking or exclusivity.
+enum ShotLock {
+
+    /// Package impulse evidence for the current frame.
+    /// Caller decides whether and how to use it.
+    static func observe(
         timestamp: Double,
-        zmax: Float
-    ) -> Bool {
+        zMax: Float
+    ) -> ShotLockObservation {
 
-        guard !isLocked else { return false }
-
-        isLocked = true
-        shotTimestamp = timestamp
-        shotZMax = zmax
-        return true
-    }
-
-    mutating func reset() {
-        isLocked = false
-        shotTimestamp = nil
-        shotZMax = nil
+        ShotLockObservation(
+            timestamp: timestamp,
+            zMax: zMax
+        )
     }
 }

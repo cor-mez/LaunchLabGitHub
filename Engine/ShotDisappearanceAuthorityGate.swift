@@ -2,86 +2,111 @@
 //  ShotDisappearanceAuthorityGate.swift
 //  LaunchLab
 //
-//  Authorizes a shot based on impact + disappearance.
-//  This is the PRIMARY authority on mobile cameras.
+//  Disappearance Observability Module (V1)
+//
+//  ROLE (STRICT):
+//  - Observe post-impact disappearance timing
+//  - Produce observational evidence only
+//  - NEVER authorize, confirm, or finalize a shot
 //
 
 import Foundation
-import CoreGraphics
 
+/// Observational disappearance evidence.
+/// Carries facts, not decisions.
+struct DisappearanceObservation {
+
+    let framesSinceImpact: Int
+    let cameraStable: Bool
+    let disappeared: Bool
+}
+
+/// Observes whether and when the ball disappears after impact.
+/// All authority is deferred to ShotLifecycleController.
 final class ShotDisappearanceAuthorityGate {
 
-    // MARK: - Parameters (conservative V1)
+    // MARK: - Parameters (OBSERVATIONAL)
 
-    /// Frames after impact in which disappearance must occur
+    /// Frames after impact in which disappearance is considered relevant
     private let maxFramesAfterImpact: Int = 4
 
     /// Require the ball to have been present immediately before impact
     private let requirePreImpactPresence: Bool = true
 
-    // MARK: - State
+    // MARK: - State (OBSERVATIONAL ONLY)
 
     private var armed: Bool = false
     private var framesSinceImpact: Int = 0
-    private var fired: Bool = false
 
     // MARK: - Lifecycle
 
     func reset() {
         armed = false
         framesSinceImpact = 0
-        fired = false
     }
 
-    /// Arm on confirmed impact signature
+    /// Arm observation window on confirmed impact (observational signal).
     func arm() {
         armed = true
         framesSinceImpact = 0
-        fired = false
-        Log.info(.shot, "[DISAPPEAR] armed")
+        Log.info(.shot, "[OBSERVE] disappearance armed")
     }
 
-    /// Call once per frame while armed
+    /// Advance one frame while armed.
     func advanceFrame() {
         guard armed else { return }
         framesSinceImpact += 1
     }
 
-    /// Evaluate disappearance.
-    /// Returns true exactly once when authorized.
-    func evaluate(
+    /// Observe disappearance characteristics for the current frame.
+    /// Returns a DisappearanceObservation when disappearance is observed
+    /// or when the observation window expires.
+    func observe(
         ballPresent: Bool,
         cameraStable: Bool
-    ) -> Bool {
+    ) -> DisappearanceObservation? {
 
-        guard armed, !fired else { return false }
+        guard armed else { return nil }
 
-        // Camera instability veto (truth-preserving)
-        guard cameraStable else {
-            Log.info(.shot, "[DISAPPEAR] veto camera_unstable")
+        // Camera stability is observed, not enforced
+        if !cameraStable {
+            Log.info(.shot, "[OBSERVE] disappearance camera_unstable")
             reset()
-            return false
+            return DisappearanceObservation(
+                framesSinceImpact: framesSinceImpact,
+                cameraStable: false,
+                disappeared: false
+            )
         }
 
-        // Ball disappears shortly after impact → AUTHORIZE
+        // Ball disappears within window
         if !ballPresent {
-            fired = true
             Log.info(
                 .shot,
-                "[SHOT] authorized_by_disappearance frames=\(framesSinceImpact)"
+                "[OBSERVE] disappearance detected frames=\(framesSinceImpact)"
             )
-            return true
+            reset()
+            return DisappearanceObservation(
+                framesSinceImpact: framesSinceImpact,
+                cameraStable: true,
+                disappeared: true
+            )
         }
 
-        // Expired window → refuse
+        // Observation window expired
         if framesSinceImpact > maxFramesAfterImpact {
             Log.info(
                 .shot,
-                "[DISAPPEAR] expired frames=\(framesSinceImpact)"
+                "[OBSERVE] disappearance window_expired frames=\(framesSinceImpact)"
             )
             reset()
+            return DisappearanceObservation(
+                framesSinceImpact: framesSinceImpact,
+                cameraStable: cameraStable,
+                disappeared: false
+            )
         }
 
-        return false
+        return nil
     }
 }

@@ -2,28 +2,42 @@
 //  ImpactConfirmationGate.swift
 //  LaunchLab
 //
-//  Confirms ENTRY into a motion regime.
-//  Rejects camera-global motion.
-//  Purpose: detect real impact onset, not violence.
+//  Impact Onset Observability Module (V1)
+//
+//  ROLE (STRICT):
+//  - Observe entry into a motion regime consistent with impact
+//  - Reject camera-global motion
+//  - Produce observational evidence only
+//  - NEVER confirm, authorize, or finalize a shot
 //
 
 import Foundation
 import CoreGraphics
 
+/// Observational impact-onset evidence.
+/// Carries facts, not decisions.
+struct ImpactObservation {
+
+    let activeFrames: Int
+    let instantaneousPxPerSec: Double
+    let centerDriftPx: Double
+}
+
+/// Observes motion patterns consistent with impact onset.
+/// All authority is deferred to ShotLifecycleController.
 final class ImpactConfirmationGate {
 
-    // MARK: - Parameters
+    // MARK: - Parameters (OBSERVATIONAL)
 
     private let requiredActiveFrames: Int = 3
     private let activityThresholdPxPerSec: Double = 6.0
     private let maxIdleFrames: Int = 2
     private let maxCenterDriftPx: Double = 3.0
 
-    // MARK: - State
+    // MARK: - State (OBSERVATIONAL ONLY)
 
     private var activeFrames: Int = 0
     private var idleFrames: Int = 0
-    private var confirmed: Bool = false
     private var anchorCenter: CGPoint?
 
     // MARK: - Reset
@@ -31,22 +45,23 @@ final class ImpactConfirmationGate {
     func reset() {
         activeFrames = 0
         idleFrames = 0
-        confirmed = false
         anchorCenter = nil
     }
 
     // MARK: - Update
 
-    /// Returns true exactly once when impact is confirmed
-    func update(
+    /// Observe impact-onset characteristics for the current frame.
+    /// Returns an ImpactObservation when minimum structure exists,
+    /// otherwise returns nil.
+    func observe(
         presenceOk: Bool,
         center: CGPoint,
         instantaneousPxPerSec: Double
-    ) -> Bool {
+    ) -> ImpactObservation? {
 
         guard presenceOk else {
             reset()
-            return false
+            return nil
         }
 
         if anchorCenter == nil {
@@ -72,15 +87,32 @@ final class ImpactConfirmationGate {
 
         if idleFrames > maxIdleFrames {
             reset()
-            return false
+            return nil
         }
 
-        if !confirmed && activeFrames >= requiredActiveFrames {
-            confirmed = true
-            Log.info(.shot, "PHASE impact_confirmed")
-            return true
+        guard activeFrames >= requiredActiveFrames else {
+            return nil
         }
 
-        return false
+        Log.info(
+            .shot,
+            "[OBSERVE] impact_onset frames=\(activeFrames) px_s=\(fmt1(instantaneousPxPerSec)) drift=\(fmt2(drift))"
+        )
+
+        return ImpactObservation(
+            activeFrames: activeFrames,
+            instantaneousPxPerSec: instantaneousPxPerSec,
+            centerDriftPx: drift
+        )
+    }
+
+    // MARK: - Formatting
+
+    private func fmt1(_ v: Double) -> String {
+        String(format: "%.1f", v)
+    }
+
+    private func fmt2(_ v: Double) -> String {
+        String(format: "%.2f", v)
     }
 }
