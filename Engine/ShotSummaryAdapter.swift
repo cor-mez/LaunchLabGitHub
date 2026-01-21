@@ -3,7 +3,8 @@
 //  LaunchLab
 //
 //  Engine adapter: ShotLifecycleRecord → EngineShotSummary
-//  Authority-only mapping (no observational leakage).
+//  AUTHORITY-ONLY mapping.
+//  NO observational or measured metric leakage.
 //
 
 import Foundation
@@ -11,8 +12,7 @@ import Foundation
 enum ShotSummaryAdapter {
 
     static func makeEngineSummary(
-        from record: ShotLifecycleRecord,
-        ballSpeedMPH: Double?
+        from record: ShotLifecycleRecord
     ) -> EngineShotSummary {
 
         EngineShotSummary(
@@ -20,16 +20,9 @@ enum ShotSummaryAdapter {
             startTimestamp: record.startTimestamp,
             impactTimestamp: record.impactTimestamp,
             endTimestamp: record.endTimestamp,
-
-            // Legacy field retained for compatibility.
-            // Intentionally empty: motion density is observational,
-            // not owned by the authority spine.
-            motionDensitySummary: "",
-
             refused: record.refused,
             refusalReason: record.refusalReason.map { stringify($0) },
-            finalState: record.finalState.rawValue,
-            ballSpeedMPH: ballSpeedMPH
+            finalState: record.finalState.rawValue
         )
     }
 

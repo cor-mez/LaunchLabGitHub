@@ -51,16 +51,14 @@ final class ShotSessionStore {
         let id = s.shotId
         let finalState = s.finalState
         let refused = s.refused
-        let motion = s.motionDensitySummary
+        let refusal = s.refusalReason ?? "none"
 
-        // NOTE: EngineShotSummary does not currently expose balllockConfidenceAtStart.
-        // If you want it in logs, add it to EngineShotSummary and set it in ShotSummaryAdapter.
         let message =
             "shot_recorded " +
             "id=\(id) " +
             "final=\(finalState) " +
             "refused=\(refused) " +
-            "motion=\(motion)"
+            "reason=\(refusal)"
 
         Log.info(.shot, message)
     }

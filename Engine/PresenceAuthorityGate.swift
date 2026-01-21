@@ -2,27 +2,42 @@
 //  PresenceAuthorityGate.swift
 //  LaunchLab
 //
-//  Presence Authority (V1.3)
+//  Presence Observability (V1)
 //
-//  Determines whether a REAL BALL is present.
-//
-//  Order of evaluation:
-//  1. Dynamic presence (FAST9 + jitter)
-//  2. Static motion presence (low-speed stability)
-//  3. Spatial presence (pixel occupancy)
-//
-//  Observation-only. No authority.
+//  ROLE (STRICT):
+//  - Observe evidence related to object presence
+//  - Emit factual signals only (no decisions, no phases)
+//  - NEVER authorize, gate, arm, or finalize
+//  - All authority lives in ShotLifecycleController
 //
 
 import Foundation
 import CoreGraphics
 
-enum PresenceDecision: Equatable {
-    case present
-    case absent(reason: String)
+// ---------------------------------------------------------------------
+// MARK: - Observational Output (FACTS ONLY)
+// ---------------------------------------------------------------------
+
+struct PresenceObservation: Equatable {
+
+    /// FAST9 / tracking confidence
+    let confidence: Float
+
+    /// Average spatial jitter over recent frames (px)
+    let jitterPx: Double?
+
+    /// Number of consecutive frames supporting presence
+    let supportingFrames: Int
+
+    /// Whether spatial occupancy evidence exists
+    let spatialEvidencePresent: Bool
 }
 
-struct PresenceAuthorityInput: Equatable {
+// ---------------------------------------------------------------------
+// MARK: - Input
+// ---------------------------------------------------------------------
+
+struct PresenceObservationInput: Equatable {
     let timestampSec: Double
     let ballLockConfidence: Float
     let center: CGPoint?
@@ -30,38 +45,53 @@ struct PresenceAuthorityInput: Equatable {
     let spatialMask: Set<Int>?
 }
 
+// ---------------------------------------------------------------------
+// MARK: - Observer
+// ---------------------------------------------------------------------
+
 final class PresenceAuthorityGate {
 
-    // MARK: - Dynamic presence (existing behavior)
+    // --------------------------------------------------
+    // Tunables (OBSERVATIONAL ONLY)
+    // --------------------------------------------------
 
     private let minConfidence: Float = 120
     private let maxJitterPx: Double = 4.0
     private let minStableFrames: Int = 6
-    private let graceFrames: Int = 6
+
+    // --------------------------------------------------
+    // State (ephemeral, non-authoritative)
+    // --------------------------------------------------
 
     private var recentCenters: [CGPoint] = []
-    private var graceRemaining: Int = 6
-
-    // MARK: - Static + Spatial
 
     private let staticAccumulator = StaticPresenceAccumulator()
     private let spatialObserver = SpatialPresenceObserver()
 
-    // MARK: - Reset
+    // --------------------------------------------------
+    // Reset
+    // --------------------------------------------------
 
     func reset() {
         recentCenters.removeAll()
-        graceRemaining = graceFrames
         staticAccumulator.reset()
         spatialObserver.reset()
     }
 
-    // MARK: - Update
+    // --------------------------------------------------
+    // Observe
+    // --------------------------------------------------
 
-    func update(_ input: PresenceAuthorityInput) -> PresenceDecision {
+    /// Observes presence-related evidence for this frame.
+    /// Returns factual measurements only.
+    func observe(_ input: PresenceObservationInput) -> PresenceObservation {
+
+        var jitter: Double? = nil
+        var supportingFrames = 0
+        var spatialEvidence = false
 
         // --------------------------------------------------
-        // 1. Dynamic FAST9 presence
+        // Dynamic presence (FAST9 stability)
         // --------------------------------------------------
 
         if input.ballLockConfidence >= minConfidence,
@@ -72,68 +102,64 @@ final class PresenceAuthorityGate {
                 recentCenters.removeFirst(recentCenters.count - minStableFrames)
             }
 
-            if recentCenters.count < minStableFrames {
-                graceRemaining -= 1
-                return graceRemaining >= 0
-                    ? .absent(reason: "warming_up")
-                    : .absent(reason: "insufficient_stability")
-            }
+            if recentCenters.count >= minStableFrames {
+                let avg = averagePoint(recentCenters)
+                let maxDist = recentCenters
+                    .map { hypot(Double($0.x - avg.x), Double($0.y - avg.y)) }
+                    .max() ?? 0
 
-            let avg = averagePoint(recentCenters)
-            let maxDist = recentCenters
-                .map { hypot(Double($0.x - avg.x), Double($0.y - avg.y)) }
-                .max() ?? 0
+                jitter = maxDist
+                supportingFrames = recentCenters.count
 
-            if maxDist <= maxJitterPx {
-                staticAccumulator.reset()
-                spatialObserver.reset()
-
-                Log.info(.shot, "PHASE presence_dynamic")
-                return .present
+                if maxDist <= maxJitterPx {
+                    staticAccumulator.reset()
+                    spatialObserver.reset()
+                }
             }
         }
 
         // --------------------------------------------------
-        // 2. Static motion presence (low-speed)
+        // Static low-speed presence
         // --------------------------------------------------
 
-        let staticDecision = staticAccumulator.observe(
+        let staticResult = staticAccumulator.observe(
             center: input.center,
             speedPxPerSec: input.speedPxPerSec,
             presenceConfidence: input.ballLockConfidence
         )
 
-        if case .stable(let jitter, let frames) = staticDecision {
-            spatialObserver.reset()
-
-            Log.info(
-                .shot,
-                "PHASE presence_static_motion jitter=\(String(format: "%.2f", jitter)) frames=\(frames)"
-            )
-            return .present
+        if case .stable(_, let frames) = staticResult {
+            supportingFrames = max(supportingFrames, frames)
         }
 
         // --------------------------------------------------
-        // 3. Spatial presence (pixel occupancy)
+        // Spatial occupancy
         // --------------------------------------------------
 
-        let spatialDecision = spatialObserver.observe(
+        let spatialResult = spatialObserver.observe(
             mask: input.spatialMask,
             confidence: input.ballLockConfidence
         )
 
-        if case .present(let stability, let frames) = spatialDecision {
-            Log.info(
-                .shot,
-                "PHASE presence_spatial stability=\(String(format: "%.2f", stability)) frames=\(frames)"
-            )
-            return .present
+        if case .present = spatialResult {
+            spatialEvidence = true
         }
 
-        return .absent(reason: "no_presence")
+        // --------------------------------------------------
+        // Emit OBSERVATION ONLY
+        // --------------------------------------------------
+
+        return PresenceObservation(
+            confidence: input.ballLockConfidence,
+            jitterPx: jitter,
+            supportingFrames: supportingFrames,
+            spatialEvidencePresent: spatialEvidence
+        )
     }
 
-    // MARK: - Helpers
+    // --------------------------------------------------
+    // Helpers
+    // --------------------------------------------------
 
     private func averagePoint(_ pts: [CGPoint]) -> CGPoint {
         let sum = pts.reduce(CGPoint.zero) { acc, p in
