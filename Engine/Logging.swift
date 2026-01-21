@@ -21,6 +21,7 @@ enum Log {
     /// Offline + diagnostics mode
     /// Truth-first, no suppression
     static var enabled: Set<LogPhase> = [
+        .camera,
         .shot,
         .detection,
         .authority

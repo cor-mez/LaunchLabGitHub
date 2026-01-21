@@ -23,11 +23,14 @@ final class FounderExperienceViewController: UIViewController,
     // -----------------------------------------------------------
 
     private let camera = CameraCapture()
-    private let previewView = FounderPreviewView(frame: .zero, device: nil)
+    private let previewView = FounderPreviewView(
+        frame: .zero,
+        device: MetalRenderer.shared.device
+    )
     private let lifecycleHUD = ShotLifecycleHUDView()
 
     // -----------------------------------------------------------
-    // MARK: - UI (NON-AUTHORITATIVE)
+    // MARK: - UI
     // -----------------------------------------------------------
 
     private let instructionLabel: UILabel = {
@@ -58,46 +61,43 @@ final class FounderExperienceViewController: UIViewController,
         view.addSubview(lifecycleHUD)
 
         NSLayoutConstraint.activate([
-            // ---------------- Preview ----------------
             previewView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             previewView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.6),
 
-            // ---------------- HUD ----------------
             lifecycleHUD.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             lifecycleHUD.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             lifecycleHUD.widthAnchor.constraint(equalToConstant: 220),
             lifecycleHUD.heightAnchor.constraint(equalToConstant: 70),
 
-            // ---------------- Instruction ----------------
             instructionLabel.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 8),
             instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)
         ])
 
-        // -------------------------------------------------------
-        // MARK: - Mode Flags (NON-AUTHORITATIVE)
-        // -------------------------------------------------------
-
         DotTestMode.shared.previewEnabled = true
         DotTestMode.shared.isArmedForDetection = false
         DotTestMode.shared.founderTestModeEnabled = true
-
-        // -------------------------------------------------------
-        // MARK: - Camera (OBSERVABILITY)
-        // -------------------------------------------------------
 
         camera.delegate = self
         camera.start()
         camera.lockCameraForMeasurement(targetFPS: 120)
     }
 
-    // =====================================================================
+    // -----------------------------------------------------------
     // MARK: - CameraFrameDelegate
-    // =====================================================================
+    // -----------------------------------------------------------
 
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        DotTestCoordinator.shared.processFrame(pixelBuffer, timestamp: timestamp)
+
+        // 🔑 Preview owns rendering
+        previewView.update(pixelBuffer: pixelBuffer)
+
+        // Engine observability
+        DotTestCoordinator.shared.processFrame(
+            pixelBuffer,
+            timestamp: timestamp
+        )
     }
 }

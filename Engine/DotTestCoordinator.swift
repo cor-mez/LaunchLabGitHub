@@ -2,12 +2,14 @@
 //  DotTestCoordinator.swift
 //  LaunchLab
 //
-//  Rolling-Shutter Measurement Harness v6
+//  Rolling-Shutter Measurement Harness (V6)
 //
-//  OBSERVATION + WIRING ONLY
-//  - No detection authority
-//  - No lifecycle decisions
-//  - Feeds ShotLifecycleController with explicit evidence
+//  ROLE (STRICT):
+//  - OBSERVATION ONLY
+//  - NO authority
+//  - NO lifecycle decisions
+//  - NO latching
+//  - Produces explicit facts for ShotLifecycleController
 //
 
 import CoreMedia
@@ -19,7 +21,7 @@ final class DotTestCoordinator {
     static let shared = DotTestCoordinator()
 
     // -----------------------------------------------------------
-    // Core Observers (OBSERVATIONAL ONLY)
+    // MARK: - Observers (PURE OBSERVATION)
     // -----------------------------------------------------------
 
     private let detector = MetalDetector.shared
@@ -27,64 +29,54 @@ final class DotTestCoordinator {
     private let rsFilter = RSGatedPointFilter()
     private let stats = RollingShutterSessionStats()
 
-    private let eligibilityObserver = ShotAuthorityGate()
-    private let impulseObserver = ImpactImpulseAuthority()
     private let cadenceEstimator = CadenceEstimator()
+    private let impulseObserver = ImpactImpulseAuthority()
 
     // -----------------------------------------------------------
-    // Authority Spine (SINGULAR, ACTOR)
+    // MARK: - Authority Spine (SINGULAR, CALLED ONLY)
     // -----------------------------------------------------------
 
     private let shotAuthority = ShotLifecycleController()
 
     // -----------------------------------------------------------
-    // Debug / Overlay (NON-AUTHORITATIVE)
+    // MARK: - Debug / Overlay (READ-ONLY)
     // -----------------------------------------------------------
 
     private(set) var debugROI: CGRect = .zero
     private(set) var debugFullSize: CGSize = .zero
-    private(set) var debugBallLocked: Bool = false
-    private(set) var debugConfidence: Float = 0
 
     // -----------------------------------------------------------
-    // Harness Controls
+    // MARK: - Harness Controls
     // -----------------------------------------------------------
-
-    var baselineModeEnabled: Bool = true
-    private let minBaselineFrames: Int = 60
 
     private let detectionInterval = 2
     private var frameIndex = 0
-    private var framesSinceIdle: Int = 0
 
     private init() {}
 
     // -----------------------------------------------------------
-    // Baseline Reset
+    // MARK: - Frame Processing
     // -----------------------------------------------------------
 
-    func resetBaseline() {
-        stats.resetBaseline()
-        baselineModeEnabled = true
-        Log.info(.detection, "rs baseline reset")
-    }
-
-    // -----------------------------------------------------------
-    // Frame Processing (OBSERVATION → AUTHORITY INPUT)
-    // -----------------------------------------------------------
-
-    func processFrame(_ pb: CVPixelBuffer, timestamp: CMTime) {
+    func processFrame(
+        _ pixelBuffer: CVPixelBuffer,
+        timestamp: CMTime
+    ) {
 
         let tSec = CMTimeGetSeconds(timestamp)
 
-        // Cadence observability
+        // -------------------------------------------------------
+        // Cadence observability (FACT)
+        // -------------------------------------------------------
+
         cadenceEstimator.push(timestamp: tSec)
+        let captureValid = cadenceEstimator.estimatedFPS >= 90
 
         frameIndex += 1
         guard frameIndex % detectionInterval == 0 else { return }
 
-        let w = CVPixelBufferGetWidth(pb)
-        let h = CVPixelBufferGetHeight(pb)
+        let w = CVPixelBufferGetWidth(pixelBuffer)
+        let h = CVPixelBufferGetHeight(pixelBuffer)
         guard w > 64, h > 64 else { return }
 
         let roi = CGRect(
@@ -97,8 +89,12 @@ final class DotTestCoordinator {
         debugROI = roi
         debugFullSize = CGSize(width: w, height: h)
 
+        // -------------------------------------------------------
+        // GPU → FAST9 → RS OBSERVATION
+        // -------------------------------------------------------
+
         detector.prepareFrameY(
-            pb,
+            pixelBuffer,
             roi: roi,
             srScale: 1.0
         ) { [weak self] in
@@ -107,11 +103,7 @@ final class DotTestCoordinator {
             self.detector.gpuFast9ScoredCornersY { metalPoints in
 
                 let rawPoints: [CGPoint] = metalPoints.map { $0.point }
-                let filtPoints: [CGPoint] = self.rsFilter.filter(points: rawPoints)
-
-                // ---------------------------------------------------
-                // RS OBSERVATION
-                // ---------------------------------------------------
+                let filtPoints = self.rsFilter.filter(points: rawPoints)
 
                 let rsObservation = self.rsProbe.evaluate(
                     points: filtPoints,
@@ -143,17 +135,8 @@ final class DotTestCoordinator {
                         filtCount: Double(filtPoints.count)
                     )
 
-                    if self.baselineModeEnabled {
-                        self.stats.addBaseline(sample)
-
-                        if self.stats.hasBaseline(minCount: self.minBaselineFrames) {
-                            self.baselineModeEnabled = false
-                            Log.info(
-                                .detection,
-                                "rs_baseline_locked | \(self.stats.baselineSummary())"
-                            )
-                        }
-                    }
+                    // Baseline accumulation (truth-only, no decisions)
+                    self.stats.addBaseline(sample)
 
                     if let z = self.stats.zScores(for: sample) {
                         Log.info(
@@ -169,33 +152,18 @@ final class DotTestCoordinator {
                 }
 
                 // ---------------------------------------------------
-                // ELIGIBILITY OBSERVATION (FACTS ONLY)
+                // Impulse derivative (FACT ONLY)
                 // ---------------------------------------------------
 
-                let eligibilityEvidence = self.eligibilityObserver.observe(
-                    presenceConfidence: self.debugConfidence,
-                    instantaneousPxPerSec: 0,   // stubbed
-                    motionPhase: .idle,         // stubbed
-                    framesSinceIdle: self.framesSinceIdle
-                )
+                let impulseDelta =
+                    self.impulseObserver.observe(speedPxPerSec: 0)?
+                        .deltaSpeedPxPerSec ?? 0
 
-                let eligibleForShot =
-                    eligibilityEvidence.presenceConfidence >= 80 &&
-                    eligibilityEvidence.instantaneousPxPerSec >= 220 &&
-                    eligibilityEvidence.motionPhase != .idle
+                let impactObserved = impulseDelta > 900
 
                 // ---------------------------------------------------
-                // IMPULSE OBSERVATION (DERIVATIVE ONLY)
+                // HARD OBSERVABILITY → EXPLICIT REFUSAL
                 // ---------------------------------------------------
-
-                let impulseObserved =
-                    self.impulseObserver.observe(speedPxPerSec: 0)?.deltaSpeedPxPerSec ?? 0 > 900
-
-                // ---------------------------------------------------
-                // HARD OBSERVABILITY (FAIL CLOSED)
-                // ---------------------------------------------------
-
-                let captureValid = self.cadenceEstimator.estimatedFPS >= 90
 
                 let refusalReason: RefusalReason? = {
                     if !captureValid {
@@ -213,21 +181,20 @@ final class DotTestCoordinator {
                 // AUTHORITY INPUT (SINGULAR SPINE)
                 // ---------------------------------------------------
 
+                let input = ShotLifecycleInput(
+                    timestampSec: tSec,
+                    captureValid: captureValid,
+                    rsObservable: rsObservable,
+                    eligibleForShot: false,          // not wired yet
+                    impactObserved: impactObserved,
+                    postImpactObserved: false,       // not wired yet
+                    confirmedByUpstream: false,      // frozen in V1
+                    refusalReason: refusalReason
+                )
+
                 Task {
-                    _ = await self.shotAuthority.update(
-                        ShotLifecycleInput(
-                            timestampSec: tSec,
-                            captureValid: captureValid,
-                            rsObservable: rsObservable,
-                            eligibleForShot: eligibleForShot,
-                            impactObserved: impulseObserved,
-                            postImpactObserved: false,   // wired later
-                            confirmedByUpstream: false,  // frozen
-                            refusalReason: refusalReason
-                        )
-                    )
-                }
-            }
+                    _ = await self.shotAuthority.update(input)
+                }            }
         }
     }
 }

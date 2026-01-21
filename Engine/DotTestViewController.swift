@@ -2,35 +2,45 @@
 //  DotTestViewController.swift
 //  LaunchLab
 //
-//  Camera preview + minimal ROI overlay box.
-//  No text overlays. No confidence bars.
-//  Detection can run wherever you currently run it.
-//  Overlay is driven only by (debugROI, debugFullSize).
+//  Camera preview + ROI overlay (OBSERVABILITY ONLY)
+//
+//  STRICT ROLE:
+//  - Show live camera preview
+//  - Visualize engine-selected ROI
+//  - Feed frames into observability pipeline
+//  - NO authority, NO lifecycle, NO decisions
 //
 
 import UIKit
 import CoreMedia
-import CoreVideo
 import MetalKit
 
 @MainActor
-final class DotTestViewController: UIViewController {
+final class DotTestViewController: UIViewController, CameraFrameDelegate {
+
+    // ---------------------------------------------------------
+    // MARK: - Core
+    // ---------------------------------------------------------
 
     private let camera = CameraCapture()
-    private var lastUIUpdateTime: CFTimeInterval = 0
 
-    private let previewView = DotTestPreviewView(
+    private let previewView = FounderPreviewView(
         frame: .zero,
         device: MetalRenderer.shared.device
     )
 
     private let roiOverlay = ROIRectOverlayLayer()
 
+    // ---------------------------------------------------------
+    // MARK: - Lifecycle
+    // ---------------------------------------------------------
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
         view.backgroundColor = .black
 
+        // ---------------- Preview ----------------
         previewView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(previewView)
 
@@ -41,55 +51,62 @@ final class DotTestViewController: UIViewController {
             previewView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        view.layoutIfNeeded()
-        previewView.drawableSize = previewView.bounds.size
-
-        // Add ROI overlay on top of preview
+        // ---------------- ROI Overlay ----------------
         roiOverlay.frame = previewView.bounds
         previewView.layer.addSublayer(roiOverlay)
 
+        // ---------------- Mode Flags ----------------
         DotTestMode.shared.previewEnabled = true
-        DotTestMode.shared.isArmedForDetection = true
+        DotTestMode.shared.isArmedForDetection = false
 
+        // ---------------- Camera ----------------
         camera.delegate = self
         camera.start()
+        camera.lockCameraForMeasurement(targetFPS: 120)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         roiOverlay.frame = previewView.bounds
     }
-}
 
-// -----------------------------------------------------------------------------
-// MARK: - CameraFrameDelegate
-// -----------------------------------------------------------------------------
+    // ---------------------------------------------------------
+    // MARK: - CameraFrameDelegate
+    // ---------------------------------------------------------
 
-extension DotTestViewController: CameraFrameDelegate {
+    func cameraDidOutput(
+        _ pixelBuffer: CVPixelBuffer,
+        timestamp: CMTime
+    ) {
+        // -----------------------------------------------------
+        // 1) Live preview (UI only)
+        // -----------------------------------------------------
+        previewView.update(pixelBuffer: pixelBuffer)
 
-    func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        // -----------------------------------------------------
+        // 2) Engine observability
+        // -----------------------------------------------------
+        DotTestCoordinator.shared.processFrame(
+            pixelBuffer,
+            timestamp: timestamp
+        )
 
-        // Detection (keep whatever threading you currently use)
-        DetectionQueue.shared.async {
-            DotTestCoordinator.shared.processFrame(
-                pixelBuffer,
-                timestamp: timestamp
-            )
-        }
+        // -----------------------------------------------------
+        // 3) ROI overlay (OBSERVABILITY ONLY)
+        // -----------------------------------------------------
+        let roi = DotTestCoordinator.shared.debugROI
+        let fullSize = DotTestCoordinator.shared.debugFullSize
 
-        // UI render (throttled)
-        let now = CACurrentMediaTime()
-        guard now - lastUIUpdateTime >= (1.0 / 60.0) else { return }
-        lastUIUpdateTime = now
+        guard
+            roi.width > 0,
+            roi.height > 0,
+            fullSize.width > 0,
+            fullSize.height > 0
+        else { return }
 
-        let yTex = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
-        previewView.render(texture: yTex, isR8: true, forceSolidColor: false)
-
-        // ROI overlay (geometry only)
-        let c = DotTestCoordinator.shared
         roiOverlay.update(
-            roi: c.debugROI,
-            fullSize: c.debugFullSize,
+            roi: roi,
+            fullSize: fullSize,
             in: previewView.bounds
         )
     }

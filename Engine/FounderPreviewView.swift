@@ -1,75 +1,82 @@
+//
+//  FounderPreviewView.swift
+//  LaunchLab
+//
+//  Live camera preview (OBSERVABILITY ONLY)
+//  - Single-present Metal rendering
+//  - Camera drives texture updates
+//  - MTKView draws ONLY on explicit request
+//  - No authority, no inference
+//
+
 import MetalKit
-import UIKit
+import CoreVideo
 
 @MainActor
 final class FounderPreviewView: MTKView {
 
+    // ---------------------------------------------------------------------
+    // MARK: - State
+    // ---------------------------------------------------------------------
+
+    /// Current Y-plane texture for preview
     private var currentTexture: MTLTexture?
-    private var currentIsR8: Bool = false
-    private let overlayLayer = FounderOverlayLayer()
+
+    // ---------------------------------------------------------------------
+    // MARK: - Init
+    // ---------------------------------------------------------------------
 
     override init(frame: CGRect, device: MTLDevice?) {
-        super.init(frame: frame, device: device ?? MetalRenderer.shared.device)
-        commonInit()
+        super.init(frame: frame, device: device)
+
+        framebufferOnly = false
+
+        // 🔑 CRITICAL:
+        // Disable automatic rendering.
+        // We explicitly request draws when a new frame arrives.
+        isPaused = true
+        enableSetNeedsDisplay = true
+
+        delegate = self
     }
 
     required init(coder: NSCoder) {
-        super.init(coder: coder)
-        device = MetalRenderer.shared.device
-        commonInit()
+        fatalError("init(coder:) has not been implemented")
     }
 
-    private func commonInit() {
-        framebufferOnly = false
-        colorPixelFormat = .bgra8Unorm
-        isPaused = false
-        enableSetNeedsDisplay = false
-        delegate = self
+    // ---------------------------------------------------------------------
+    // MARK: - Frame ingestion (from CameraCapture)
+    // ---------------------------------------------------------------------
 
-        overlayLayer.contentsScale = UIScreen.main.scale
-        overlayLayer.isOpaque = false
-        layer.addSublayer(overlayLayer)
-    }
+    /// Update preview texture and request exactly one draw.
+    /// Called from camera callback.
+    func update(pixelBuffer: CVPixelBuffer) {
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        overlayLayer.frame = bounds
-    }
+        currentTexture = MetalRenderer.shared.makeYPlaneTexture(from: pixelBuffer)
 
-    // CALLED BY VIEW CONTROLLER ONLY
-    func render(texture: MTLTexture?, isR8: Bool, forceSolidColor: Bool) {
-        self.currentTexture = texture
-        self.currentIsR8 = isR8
-    }
-
-    func updateOverlay(
-        roi: CGRect,
-        fullSize: CGSize,
-        ballLocked: Bool,
-        confidence: Float
-    ) {
-        overlayLayer.update(
-            roi: roi,
-            fullSize: fullSize,
-            ballLocked: ballLocked,
-            confidence: confidence
-        )
+        // 🔑 Exactly ONE draw per frame
+        setNeedsDisplay()
     }
 }
 
+// -----------------------------------------------------------------------------
+// MARK: - MTKViewDelegate
+// -----------------------------------------------------------------------------
+
 extension FounderPreviewView: MTKViewDelegate {
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // No-op
+    }
 
     func draw(in view: MTKView) {
+
         guard DotTestMode.shared.previewEnabled else { return }
         guard let tex = currentTexture else { return }
 
         MetalRenderer.shared.renderPreview(
             texture: tex,
-            in: view,
-            isR8: currentIsR8,
-            forceSolid: false
+            in: view
         )
     }
 }

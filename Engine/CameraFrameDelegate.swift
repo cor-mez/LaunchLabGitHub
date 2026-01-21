@@ -1,12 +1,11 @@
 //
 //  CameraFrameDelegate.swift
+//  LaunchLab
 //
 
-import CoreMedia
 import CoreVideo
+import CoreMedia
 
-@MainActor
 protocol CameraFrameDelegate: AnyObject {
-    /// Called on the MainActor for every captured frame.
     func cameraDidOutput(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime)
 }
