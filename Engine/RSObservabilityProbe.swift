@@ -10,46 +10,48 @@
 //  - No decisions
 //  - No logging
 //  - Emits telemetry facts only
+//  - MUST return a classified RSFrameObservation
 //
 
+import Foundation
 import CoreGraphics
 
-// -----------------------------------------------------------------------------
-// Phase-2 specific observation (DO NOT CONFUSE WITH ENGINE RSFrameObservation)
-// -----------------------------------------------------------------------------
-
-struct RSFrameProbeObservation {
-
-    let rowSlope: Float
-    let nonUniformity: Float
-    let edgeEnergy: Float
-    let valid: Bool
-}
-
 final class RSObservabilityProbe {
+
+    // ---------------------------------------------------------
+    // MARK: - Entry Point
+    // ---------------------------------------------------------
 
     @inline(__always)
     func evaluate(
         points: [CGPoint],
-        imageHeight: Int
-    ) -> RSFrameProbeObservation {
+        imageHeight: Int,
+        timestamp: Double
+    ) -> RSFrameObservation {
+
+        // -----------------------------------------------------
+        // Guard: minimum spatial support
+        // -----------------------------------------------------
 
         guard points.count >= 6 else {
-            TelemetryRingBuffer.shared.push(
-                phase: .detection,
-                code: 0x01   // insufficient points
-            )
-            return RSFrameProbeObservation(
-                rowSlope: 0,
-                nonUniformity: 0,
-                edgeEnergy: 0,
-                valid: false
+            return RSFrameObservation(
+                timestamp: timestamp,
+                zmax: 0,
+                dz: 0,
+                rowCorrelation: 0,
+                globalVariance: 0,
+                localVariance: 0,
+                validRowCount: points.count,
+                droppedRows: 0,
+                centroid: nil,
+                envelopeRadius: nil,
+                outcome: .refused(.insufficientRowSupport)
             )
         }
 
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
         // Row slope (least squares y vs x)
-        // ---------------------------------------------------------
+        // -----------------------------------------------------
 
         var sumX: CGFloat = 0
         var sumY: CGFloat = 0
@@ -70,35 +72,88 @@ final class RSObservabilityProbe {
             ? (n * sumXY - sumX * sumY) / denom
             : 0
 
-        // ---------------------------------------------------------
-        // Non-uniformity (row variance proxy)
-        // ---------------------------------------------------------
+        let zmax = Float(abs(slope))
+
+        // -----------------------------------------------------
+        // Variance (local RS energy proxy)
+        // -----------------------------------------------------
 
         let meanY = sumY / n
-        let variance = points.reduce(0) {
+        let localVar = points.reduce(CGFloat(0)) {
             $0 + pow($1.y - meanY, 2)
         } / n
 
-        // ---------------------------------------------------------
-        // Edge energy proxy (slope × population)
-        // ---------------------------------------------------------
+        let localVariance = Float(localVar)
 
-        let edgeEnergy = Float(abs(slope)) * Float(points.count)
+        // -----------------------------------------------------
+        // Row correlation (global dominance proxy)
+        // -----------------------------------------------------
 
-        let obs = RSFrameProbeObservation(
-            rowSlope: Float(slope),
-            nonUniformity: Float(variance),
-            edgeEnergy: edgeEnergy,
-            valid: abs(slope) > 0.0005
+        let rowCorrelation: Float = abs(zmax) > 0.0005
+            ? 1.0
+            : 0.0
+
+        // -----------------------------------------------------
+        // Spatial anchoring
+        // -----------------------------------------------------
+
+        let centroid = CGPoint(
+            x: sumX / n,
+            y: sumY / n
         )
+
+        let envelopeRadius = Float(
+            points
+                .map { hypot($0.x - centroid.x, $0.y - centroid.y) }
+                .max() ?? 0
+        )
+
+        // -----------------------------------------------------
+        // Mandatory classification (NO FALLTHROUGH)
+        // -----------------------------------------------------
+
+        let outcome: RSObservationOutcome
+
+        if rowCorrelation > 0.9 {
+            outcome = .refused(.globalRowCorrelation)
+
+        } else if envelopeRadius <= 0 {
+            outcome = .refused(.localityUnstable)
+
+        } else if zmax < 0.0005 {
+            outcome = .refused(.frameIntegrityFailure)
+
+        } else {
+            outcome = .observable
+        }
+
+        // -----------------------------------------------------
+        // Telemetry (FACTS ONLY)
+        // -----------------------------------------------------
 
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: 0x10,
-            valueA: obs.rowSlope,
-            valueB: obs.edgeEnergy
+            code: 0x20,
+            valueA: zmax,
+            valueB: localVariance
         )
 
-        return obs
+        // -----------------------------------------------------
+        // Final immutable frame observation
+        // -----------------------------------------------------
+
+        return RSFrameObservation(
+            timestamp: timestamp,
+            zmax: zmax,
+            dz: zmax, // single-frame Δz proxy
+            rowCorrelation: rowCorrelation,
+            globalVariance: localVariance, // placeholder until split
+            localVariance: localVariance,
+            validRowCount: points.count,
+            droppedRows: 0,
+            centroid: centroid,
+            envelopeRadius: envelopeRadius,
+            outcome: outcome
+        )
     }
 }

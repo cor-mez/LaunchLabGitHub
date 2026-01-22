@@ -2,39 +2,85 @@
 //  RSFrameObservation.swift
 //  LaunchLab
 //
-//  Full-frame RS observability snapshot
+//  Immutable RS observability snapshot for a single frame.
+//
+//  CONTRACT:
+//  - Every frame MUST terminate in exactly one RSObservationOutcome
+//  - No partial, pending, or unknown states
+//  - Contains raw observables only (no authority, no inference)
 //
 
 import Foundation
+import CoreGraphics
 
-struct RSFrameObservation {
+struct RSFrameObservation: Equatable {
 
+    // ---------------------------------------------------------
+    // MARK: - Timing
+    // ---------------------------------------------------------
+
+    /// Presentation timestamp (seconds, monotonic)
     let timestamp: Double
 
-    /// Aggregate (kept for continuity, NOT authority)
+    // ---------------------------------------------------------
+    // MARK: - RS metrics (raw, unfiltered)
+    // ---------------------------------------------------------
+
+    /// Maximum rolling-shutter shear magnitude
     let zmax: Float
+
+    /// Instantaneous shear gradient (Δz)
     let dz: Float
 
-    /// Per-row structure (critical)
-    let rowProfiles: [RSRowProfile]
+    /// Correlation of RS effects across rows (global sensitivity)
+    let rowCorrelation: Float
 
-    /// Spatial coherence metrics
-    let rowCorrelation: Float        // adjacent-row similarity
-    let globalVariance: Float        // scene-wide change
-    let localVariance: Float         // ROI-local change
+    /// Global luma variance (frame-wide)
+    let globalVariance: Float
 
-    /// Diagnostics
-    let droppedRows: Int
+    /// Local luma variance (ROI / centroid-local)
+    let localVariance: Float
+
+    /// Number of valid rows contributing to RS estimation
     let validRowCount: Int
 
-    /// Explicit non-decision classification
-    let classification: Classification
+    /// Rows discarded due to masking / integrity checks
+    let droppedRows: Int
 
-    enum Classification: String {
-        case insufficientData
-        case globalIlluminationChange
-        case localizedShearCandidate
-        case mixedSignal
-        case unknown
+    // ---------------------------------------------------------
+    // MARK: - Spatial anchoring
+    // ---------------------------------------------------------
+
+    /// Local centroid of RS activity (if anchorable)
+    let centroid: CGPoint?
+
+    /// Radius of the localized RS envelope (if defined)
+    let envelopeRadius: Float?
+
+    // ---------------------------------------------------------
+    // MARK: - Mandatory Outcome
+    // ---------------------------------------------------------
+
+    /// Final epistemic outcome for this frame.
+    /// MUST be either:
+    ///   - .observable
+    ///   - .refused(reason)
+    let outcome: RSObservationOutcome
+}
+
+// MARK: - Convenience (NON-AUTHORITATIVE)
+
+extension RSFrameObservation {
+
+    /// True iff this frame is usable for RS analysis.
+    @inline(__always)
+    var isObservable: Bool {
+        outcome.isObservable
+    }
+
+    /// Refusal reason, if the frame is epistemically undecidable.
+    @inline(__always)
+    var refusalReason: RSRefusalReason? {
+        outcome.refusalReason
     }
 }

@@ -2,13 +2,13 @@
 //  TelemetryRingBuffer.swift
 //  LaunchLab
 //
-//  Lock-free, allocation-free telemetry buffer.
-//  SAFE in hot paths (camera, RS, GPU callbacks).
+//  Lock-free telemetry buffer.
+//  SAFE for 120–240 FPS hot paths.
 //
 
 import Foundation
 import os.lock
-import QuartzCore   // ✅ for CACurrentMediaTime
+import QuartzCore
 
 struct TelemetryEvent {
     let timestamp: Double
@@ -42,6 +42,10 @@ final class TelemetryRingBuffer {
         )
     }
 
+    // ---------------------------------------------------------
+    // MARK: - Hot Path Write (PAUSE-AWARE)
+    // ---------------------------------------------------------
+
     @inline(__always)
     func push(
         phase: LogPhase,
@@ -49,7 +53,10 @@ final class TelemetryRingBuffer {
         valueA: Float = 0,
         valueB: Float = 0
     ) {
+        guard !TelemetryControl.isPaused else { return }
+
         let t = CACurrentMediaTime()
+
         lock.withLock {
             buffer[writeIndex] = TelemetryEvent(
                 timestamp: t,
@@ -62,7 +69,10 @@ final class TelemetryRingBuffer {
         }
     }
 
-    /// Snapshot for offline dump or UI pull (NOT hot path)
+    // ---------------------------------------------------------
+    // MARK: - Snapshot (NON-HOT PATH)
+    // ---------------------------------------------------------
+
     func snapshot() -> [TelemetryEvent] {
         lock.withLock { buffer }
     }

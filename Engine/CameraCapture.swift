@@ -29,8 +29,11 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private let captureQueue = DispatchQueue(
         label: "camera.capture.queue",
-        qos: .userInitiated
+        qos: .userInteractive
     )
+
+    /// Predictable UI delivery (prevents black preview)
+    private let deliveryQueue = DispatchQueue.main
 
     // ---------------------------------------------------------------------
     // MARK: - Observability State
@@ -43,8 +46,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var frameCounter: Int = 0
     private var deltas: [Double] = []
 
-    // Cadence warmup (do NOT treat cadence as invalid before this)
-    private let cadenceWarmupSec: Double = 0.50
+    private let cadenceWarmupSec: Double = 0.5
     private var lockTimestampSec: Double?
 
     // ---------------------------------------------------------------------
@@ -63,7 +65,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func configureSession() {
 
         session.beginConfiguration()
-        session.sessionPreset = .high
+        session.sessionPreset = .inputPriority
 
         guard let camera = AVCaptureDevice.default(
             .builtInWideAngleCamera,
@@ -98,7 +100,6 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
 
         if let conn = output.connection(with: .video) {
-            conn.videoOrientation = .landscapeRight
             conn.isVideoMirrored = false
         }
 
@@ -114,75 +115,53 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         targetFPS: Double
     ) -> AVCaptureDevice.Format? {
 
-        let supported = device.formats.compactMap { format -> AVCaptureDevice.Format? in
-            for range in format.videoSupportedFrameRateRanges {
-                if range.minFrameRate <= targetFPS &&
-                   targetFPS <= range.maxFrameRate {
-                    return format
-                }
+        let supported = device.formats.filter { format in
+            format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate <= targetFPS &&
+                targetFPS <= $0.maxFrameRate
             }
-            return nil
         }
 
         guard !supported.isEmpty else { return nil }
 
-        // Prefer 1080p formats first
         let preferred1080 = supported.filter {
             let d = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
             return d.width == 1920 && d.height == 1080
         }
 
-        let chosen: AVCaptureDevice.Format
-
-        if let best1080 = preferred1080.sorted(by: { a, b in
-            let ra = a.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
-            let rb = b.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
-            return ra > rb
-        }).first {
-            chosen = best1080
-        } else {
-            // Fallback: highest resolution that supports target FPS
-            chosen = supported.sorted {
+        let chosen: AVCaptureDevice.Format =
+            preferred1080.first ??
+            supported.sorted {
                 let a = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
                 let b = CMVideoFormatDescriptionGetDimensions($1.formatDescription)
                 return (a.width * a.height) > (b.width * b.height)
             }.first!
-        }
 
         let d = CMVideoFormatDescriptionGetDimensions(chosen.formatDescription)
-        Log.info(
-            .camera,
-            "FORMAT_SELECTED res=\(d.width)x\(d.height) maxFPS=\(chosen.videoSupportedFrameRateRanges.map { $0.maxFrameRate })"
-        )
+        Log.info(.camera, "FORMAT_SELECTED res=\(d.width)x\(d.height)")
 
         return chosen
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - Measurement Lock (CONFIGURATION ONLY)
+    // MARK: - Measurement Lock (RESTORED)
     // ---------------------------------------------------------------------
 
-    /// Locks the camera into a deterministic capture regime.
-    /// This establishes observability — not authority.
     func lockCameraForMeasurement(targetFPS: Double = 120) {
 
-        // 🔍 AUTHORITATIVE DIAGNOSTIC — must appear exactly once
         Log.info(.camera, "LOCK_ATTEMPT targetFPS=\(Int(targetFPS))")
 
-        guard !isLockedForMeasurement, let device = videoDevice else {
-            Log.info(.camera, "LOCK_SKIPPED alreadyLocked=\(isLockedForMeasurement)")
-            return
-        }
+        guard !isLockedForMeasurement, let device = videoDevice else { return }
 
         let frameDuration = CMTime(value: 1, timescale: CMTimeScale(targetFPS))
 
         do {
             try device.lockForConfiguration()
+
             guard let format = selectBestFormat(
                 device: device,
                 targetFPS: targetFPS
             ) else {
-                Log.info(.camera, "❌ No format supports \(targetFPS) FPS")
                 device.unlockForConfiguration()
                 return
             }
@@ -206,38 +185,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             device.exposureMode = .locked
             device.whiteBalanceMode = .locked
 
-            // -------- LOG TRUE CAPTURE REGIME --------
-
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let ranges = format.videoSupportedFrameRateRanges
-                .map { String(format: "[%.0f–%.0f]", $0.minFrameRate, $0.maxFrameRate) }
-                .joined(separator: ",")
-
-            Log.info(
-                .camera,
-                String(
-                    format:
-                    "📷 CAPTURE_LOCKED " +
-                    "res=%dx%d " +
-                    "targetFPS=%.0f " +
-                    "frameDur=%.6fs " +
-                    "exp=%.6fs " +
-                    "ISO≤%.0f " +
-                    "fpsRanges=%@",
-                    dims.width,
-                    dims.height,
-                    targetFPS,
-                    CMTimeGetSeconds(frameDuration),
-                    CMTimeGetSeconds(exposureDuration),
-                    maxISO,
-                    ranges
-                )
-            )
-
             device.unlockForConfiguration()
 
             isLockedForMeasurement = true
             lockTimestampSec = CACurrentMediaTime()
+
+            Log.info(.camera, "CAPTURE_LOCKED fps=\(targetFPS)")
 
         } catch {
             Log.info(.camera, "❌ Camera lock failed: \(error)")
@@ -260,19 +213,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         guard session.isRunning else { return }
         captureQueue.async {
             self.session.stopRunning()
-            Log.info(.camera, "Camera session stopped")
         }
-
         isLockedForMeasurement = false
-        lockTimestampSec = nil
-        lastTimestamp = nil
-        frameCounter = 0
-        deltas.removeAll()
-        estimatedFPS = 0
     }
 
     // ---------------------------------------------------------------------
-    // MARK: - Frame Delivery + Cadence Estimation (OBSERVATIONAL)
+    // MARK: - Frame Delivery + Cadence Estimation
     // ---------------------------------------------------------------------
 
     func captureOutput(
@@ -290,10 +236,8 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if dt > 0 {
                 deltas.append(dt)
                 if deltas.count > 12 { deltas.removeFirst() }
-
                 if deltas.count >= 6 {
-                    let avg = deltas.reduce(0, +) / Double(deltas.count)
-                    estimatedFPS = 1.0 / avg
+                    estimatedFPS = 1.0 / (deltas.reduce(0, +) / Double(deltas.count))
                 }
             }
         }
@@ -301,26 +245,18 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         lastTimestamp = ts
         frameCounter += 1
 
-        // Cadence log only after warmup
         if
             let lockT = lockTimestampSec,
             CACurrentMediaTime() - lockT >= cadenceWarmupSec,
-            frameCounter % 120 == 0,
-            estimatedFPS > 0
+            frameCounter % 120 == 0
         {
-            Log.info(
-                .camera,
-                String(format: "FPS_ESTIMATE steady=%.1f", estimatedFPS)
-            )
+            Log.info(.camera, String(format: "FPS_ESTIMATE %.1f", estimatedFPS))
         }
 
-        Task { @MainActor in
-            delegate?.cameraDidOutput(
+        deliveryQueue.async {
+            self.delegate?.cameraDidOutput(
                 pb,
-                timestamp: CMTime(
-                    seconds: ts,
-                    preferredTimescale: 1_000_000
-                )
+                timestamp: CMTime(seconds: ts, preferredTimescale: 1_000_000)
             )
         }
     }
