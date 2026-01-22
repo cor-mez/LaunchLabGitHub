@@ -2,12 +2,15 @@
 //  SceneDelegate.swift
 //  LaunchLab
 //
-//  App Boot Entry (V1)
+//  App Boot Entry — PHASE 1
 //
 //  ROLE (STRICT):
-//  - Define the single UI boot path
-//  - NEVER create, bypass, or imply shot authority
-//  - All measurement authority lives in Engine
+//  - Boot Phase 1 capture cadence probe ONLY
+//  - No UI
+//  - No preview
+//  - No Metal
+//  - No RS
+//  - No lifecycle
 //
 
 import UIKit
@@ -15,6 +18,7 @@ import UIKit
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
+    private var phase1Probe: Phase1CaptureProbe?
 
     func scene(
         _ scene: UIScene,
@@ -26,29 +30,26 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // macOS (Catalyst) — OFFLINE / NON-INTERACTIVE MODE
         // ---------------------------------------------------------
 #if targetEnvironment(macCatalyst)
-        // 🚫 No UI, no capture, no authority
-        // Offline execution is handled by AppDelegate / Engine bootstrap
+        // 🚫 No UI, no capture
         return
 
         // ---------------------------------------------------------
-        // iOS — LIVE CAPTURE MODE
+        // iOS — PHASE 1 CAPTURE PROBE
         // ---------------------------------------------------------
 #else
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard scene is UIWindowScene else { return }
 
-        // Single, orientation-locked window
-        let window = OrientationLockedWindow(windowScene: windowScene)
+        // ❌ Do NOT create a window or view controller
+        // ❌ Do NOT attach preview layers
+        // ❌ Do NOT touch Metal or RS
 
-        // Single root view controller.
-        // NOTE:
-        // - DotTestViewController performs OBSERVATION ONLY.
-        // - It does NOT own detection or authority.
-        // - All decisions flow through ShotLifecycleController in Engine.
-        let rootVC = DotTestViewController()
+        let probe = Phase1CaptureProbe()
+        self.phase1Probe = probe
 
-        window.rootViewController = rootVC
-        window.makeKeyAndVisible()
-        self.window = window
+        // 🔬 Start clean-room capture cadence test
+        probe.start(targetFPS: 120)
+
+        print("🧪 Phase 1 Capture Probe running — no UI attached")
 #endif
     }
 }
