@@ -7,20 +7,16 @@
 //  ROLE (STRICT):
 //  - Analyze ONE frame only
 //  - No temporal memory
-//  - No decisions
+//  - No decisions (no authority)
 //  - No logging
-//  - Emits telemetry facts only
-//  - MUST return a classified RSFrameObservation
+//  - MUST return a classified RSFrameObservation (observable OR refused(reason))
+//  - Telemetry is optional and must be allocation-free
 //
 
 import Foundation
 import CoreGraphics
 
 final class RSObservabilityProbe {
-
-    // ---------------------------------------------------------
-    // MARK: - Entry Point
-    // ---------------------------------------------------------
 
     @inline(__always)
     func evaluate(
@@ -29,10 +25,7 @@ final class RSObservabilityProbe {
         timestamp: Double
     ) -> RSFrameObservation {
 
-        // -----------------------------------------------------
-        // Guard: minimum spatial support
-        // -----------------------------------------------------
-
+        // Minimum spatial support
         guard points.count >= 6 else {
             return RSFrameObservation(
                 timestamp: timestamp,
@@ -49,10 +42,7 @@ final class RSObservabilityProbe {
             )
         }
 
-        // -----------------------------------------------------
-        // Row slope (least squares y vs x)
-        // -----------------------------------------------------
-
+        // Least squares slope y vs x (proxy)
         var sumX: CGFloat = 0
         var sumY: CGFloat = 0
         var sumXY: CGFloat = 0
@@ -74,63 +64,33 @@ final class RSObservabilityProbe {
 
         let zmax = Float(abs(slope))
 
-        // -----------------------------------------------------
-        // Variance (local RS energy proxy)
-        // -----------------------------------------------------
-
+        // Local variance proxy
         let meanY = sumY / n
-        let localVar = points.reduce(CGFloat(0)) {
-            $0 + pow($1.y - meanY, 2)
+        let localVar = points.reduce(CGFloat(0)) { acc, p in
+            acc + pow(p.y - meanY, 2)
         } / n
-
         let localVariance = Float(localVar)
 
-        // -----------------------------------------------------
-        // Row correlation (global dominance proxy)
-        // -----------------------------------------------------
+        // Global dominance proxy (placeholder until flicker coupling is added)
+        let rowCorrelation: Float = (zmax > 0.0005) ? 1.0 : 0.0
 
-        let rowCorrelation: Float = abs(zmax) > 0.0005
-            ? 1.0
-            : 0.0
-
-        // -----------------------------------------------------
         // Spatial anchoring
-        // -----------------------------------------------------
+        let centroid = CGPoint(x: sumX / n, y: sumY / n)
+        let envelopeRadius = Float(points.map { hypot($0.x - centroid.x, $0.y - centroid.y) }.max() ?? 0)
 
-        let centroid = CGPoint(
-            x: sumX / n,
-            y: sumY / n
-        )
-
-        let envelopeRadius = Float(
-            points
-                .map { hypot($0.x - centroid.x, $0.y - centroid.y) }
-                .max() ?? 0
-        )
-
-        // -----------------------------------------------------
-        // Mandatory classification (NO FALLTHROUGH)
-        // -----------------------------------------------------
-
+        // Mandatory classification — no fallthrough
         let outcome: RSObservationOutcome
-
-        if rowCorrelation > 0.9 {
+        if rowCorrelation > 0.90 {
             outcome = .refused(.globalRowCorrelation)
-
         } else if envelopeRadius <= 0 {
             outcome = .refused(.localityUnstable)
-
         } else if zmax < 0.0005 {
             outcome = .refused(.frameIntegrityFailure)
-
         } else {
             outcome = .observable
         }
 
-        // -----------------------------------------------------
-        // Telemetry (FACTS ONLY)
-        // -----------------------------------------------------
-
+        // Allocation-free telemetry (optional)
         TelemetryRingBuffer.shared.push(
             phase: .detection,
             code: 0x20,
@@ -138,14 +98,10 @@ final class RSObservabilityProbe {
             valueB: localVariance
         )
 
-        // -----------------------------------------------------
-        // Final immutable frame observation
-        // -----------------------------------------------------
-
         return RSFrameObservation(
             timestamp: timestamp,
             zmax: zmax,
-            dz: zmax, // single-frame Δz proxy
+            dz: zmax, // single-frame proxy
             rowCorrelation: rowCorrelation,
             globalVariance: localVariance, // placeholder until split
             localVariance: localVariance,

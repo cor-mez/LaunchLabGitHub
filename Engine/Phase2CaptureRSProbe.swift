@@ -2,18 +2,21 @@
 //  Phase2CaptureRSProbe.swift
 //  LaunchLab
 //
-//  PHASE 2 — Capture + RS observability (WIRING VERIFICATION)
+//  PHASE 2 — Capture + RS observability (CRASH-SAFE)
 //
 //  ROLE (STRICT):
 //  - Single-frame RS observability only
 //  - No authority
 //  - No lifecycle
 //  - Telemetry-only
+//  - No synthetic data
+//  - FPS is negotiated, never assumed
 //
 
 import AVFoundation
 import CoreMedia
 import CoreGraphics
+import CoreVideo
 
 final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
@@ -23,10 +26,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private let session = AVCaptureSession()
     private let output  = AVCaptureVideoDataOutput()
-    private let queue   = DispatchQueue(
-        label: "phase2.capture.queue",
-        qos: .userInteractive
-    )
+    private let queue   = DispatchQueue(label: "phase2.capture.queue", qos: .userInteractive)
 
     // ---------------------------------------------------------------------
     // MARK: - Observers
@@ -36,22 +36,20 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private let rsProbe  = RSObservabilityProbe()
 
     // ---------------------------------------------------------------------
-    // MARK: - Lifecycle
+    // MARK: - Public
     // ---------------------------------------------------------------------
 
-    func start(targetFPS: Double = 120) {
+    func start(requestedFPS: Double = 120) {
         queue.async {
-            self.configureSession(targetFPS: targetFPS)
+            self.configureSession(requestedFPS: requestedFPS)
             self.session.startRunning()
-            print("🧪 Phase2 RS wiring probe running @\(Int(targetFPS))fps")
+            print("🧪 Phase 2 RS Observability Probe running — headless, no UI")
         }
     }
 
     func stop() {
         queue.async {
-            if self.session.isRunning {
-                self.session.stopRunning()
-            }
+            if self.session.isRunning { self.session.stopRunning() }
         }
     }
 
@@ -59,59 +57,91 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
     // MARK: - Session Configuration
     // ---------------------------------------------------------------------
 
-    private func configureSession(targetFPS: Double) {
+    private func configureSession(requestedFPS: Double) {
 
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
         guard
-            let device = AVCaptureDevice.default(
-                .builtInWideAngleCamera,
-                for: .video,
-                position: .back
-            ),
+            let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
             let input = try? AVCaptureDeviceInput(device: device)
         else {
             fatalError("Phase2CaptureRSProbe: camera unavailable")
         }
 
-        if session.canAddInput(input) {
-            session.addInput(input)
-        }
+        if session.canAddInput(input) { session.addInput(input) }
 
         output.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String:
                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
-
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
 
-        if session.canAddOutput(output) {
-            session.addOutput(output)
-        }
+        if session.canAddOutput(output) { session.addOutput(output) }
 
-        try? device.lockForConfiguration()
+        // -------------------------------------------------------------
+        // FPS NEGOTIATION (CRASH-SAFE)
+        // -------------------------------------------------------------
 
-        let frameDuration = CMTime(
-            value: 1,
-            timescale: CMTimeScale(targetFPS)
+        let negotiatedFPS = selectAndApplyBestFormat(
+            device: device,
+            requestedFPS: requestedFPS
         )
 
-        if let format = device.formats.first(where: {
-            $0.videoSupportedFrameRateRanges.contains {
-                $0.minFrameRate <= targetFPS &&
-                targetFPS <= $0.maxFrameRate
-            }
-        }) {
-            device.activeFormat = format
+        TelemetryRingBuffer.shared.push(
+            phase: .camera,
+            code: 0x01,                       // negotiated FPS
+            valueA: Float(requestedFPS),
+            valueB: Float(negotiatedFPS)
+        )
+
+        session.commitConfiguration()
+    }
+
+    /// Selects a format that supports the requested FPS (or the closest lower),
+    /// applies it safely, and returns the actual FPS in effect.
+    private func selectAndApplyBestFormat(
+        device: AVCaptureDevice,
+        requestedFPS: Double
+    ) -> Double {
+
+        let formats = device.formats.compactMap { format -> (AVCaptureDevice.Format, Double)? in
+            let maxFPS = format.videoSupportedFrameRateRanges
+                .map { $0.maxFrameRate }
+                .max() ?? 0
+            guard maxFPS >= 1 else { return nil }
+            return (format, maxFPS)
         }
 
-        device.activeVideoMinFrameDuration = frameDuration
-        device.activeVideoMaxFrameDuration = frameDuration
+        // Choose the fastest format <= requestedFPS, else the fastest overall
+        let chosen = formats
+            .filter { $0.1 >= requestedFPS }
+            .min(by: { $0.1 < $1.1 })
+            ?? formats.max(by: { $0.1 < $1.1 })
 
-        device.unlockForConfiguration()
-        session.commitConfiguration()
+        guard let (format, maxFPS) = chosen else {
+            return 0
+        }
+
+        let actualFPS = min(requestedFPS, maxFPS)
+
+        do {
+            try device.lockForConfiguration()
+
+            device.activeFormat = format
+
+            let frameDuration = CMTime(value: 1, timescale: CMTimeScale(actualFPS))
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+
+            device.unlockForConfiguration()
+        } catch {
+            // Fail safely — never crash
+            return 0
+        }
+
+        return actualFPS
     }
 
     // ---------------------------------------------------------------------
@@ -124,81 +154,65 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
         from connection: AVCaptureConnection
     ) {
 
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            TelemetryRingBuffer.shared.push(
-                phase: .detection,
-                code: 0xEE,   // frame integrity failure
-                valueA: 0,
-                valueB: 0
-            )
+            TelemetryRingBuffer.shared.push(phase: .detection, code: 0xEE, valueA: 0, valueB: 0)
             return
         }
 
-        let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let w = CVPixelBufferGetWidth(pixelBuffer)
+        let h = CVPixelBufferGetHeight(pixelBuffer)
 
-        // -----------------------------------------------------------------
-        // FAST9 boundary (FULL-FRAME ROI — WIRING PROBE)
-        // -----------------------------------------------------------------
+        let fullROI = CGRect(x: 0, y: 0, width: w, height: h)
 
-        let fullROI = CGRect(
-            x: 0,
-            y: 0,
-            width: CVPixelBufferGetWidth(pixelBuffer),
-            height: CVPixelBufferGetHeight(pixelBuffer)
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: 0x40,
+            valueA: Float(w),
+            valueB: Float(h)
         )
 
-        detector.prepareFrameY(
-            pixelBuffer,
-            roi: fullROI,
-            srScale: 1.0
-        ) { [weak self] in
+        detector.prepareFrameY(pixelBuffer, roi: fullROI, srScale: 1.0) { [weak self] in
             guard let self else { return }
 
             self.detector.gpuFast9ScoredCornersY { metalPoints in
 
-                // 🔍 FAST9 callback confirmed
+                let count = metalPoints.count
                 TelemetryRingBuffer.shared.push(
                     phase: .detection,
-                    code: 0x41,                      // FAST9 callback
-                    valueA: Float(metalPoints.count),
+                    code: 0x41,
+                    valueA: Float(count),
                     valueB: 0
                 )
 
-                // -------------------------------------------------------------
-                // TEMPORARY SYNTHETIC FALLBACK (DELETE AFTER VERIFICATION)
-                // -------------------------------------------------------------
+                let rsPoints = metalPoints.map { $0.point }
 
-                let rsPoints: [CGPoint]
-                if metalPoints.isEmpty {
-                    rsPoints = [
-                        CGPoint(x: 10, y: 10),
-                        CGPoint(x: 20, y: 12),
-                        CGPoint(x: 30, y: 14),
-                        CGPoint(x: 40, y: 16),
-                        CGPoint(x: 50, y: 18),
-                        CGPoint(x: 60, y: 20)
-                    ]
-                } else {
-                    rsPoints = metalPoints.map { $0.point }
-                }
-
-                // -------------------------------------------------------------
-                // RS observability (MANDATORY CLASSIFICATION)
-                // -------------------------------------------------------------
-
-                let observation = self.rsProbe.evaluate(
+                let obs = self.rsProbe.evaluate(
                     points: rsPoints,
-                    imageHeight: imageHeight,
-                    timestamp: timestamp
+                    imageHeight: h,
+                    timestamp: ts
+                )
+
+                let outcomeCode: UInt16 = {
+                    switch obs.outcome {
+                    case .observable: return 0
+                    case .refused(let r): return r.rawValue
+                    }
+                }()
+
+                TelemetryRingBuffer.shared.push(
+                    phase: .detection,
+                    code: 0x42,
+                    valueA: obs.zmax,
+                    valueB: Float(obs.validRowCount)
                 )
 
                 TelemetryRingBuffer.shared.push(
                     phase: .detection,
-                    code: 0x42,                      // RS classified
-                    valueA: observation.zmax,
-                    valueB: Float(observation.validRowCount)
+                    code: 0x43,
+                    valueA: Float(outcomeCode),
+                    valueB: 0
                 )
             }
         }

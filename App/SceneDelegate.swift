@@ -2,15 +2,15 @@
 //  SceneDelegate.swift
 //  LaunchLab
 //
-//  App Boot Entry — PHASE 1
+//  App Boot Entry — PHASE 2 (Headless RS Observability)
 //
 //  ROLE (STRICT):
-//  - Boot Phase 1 capture cadence probe ONLY
+//  - Boot Phase-2 capture + FAST9 + RS observability ONLY
 //  - No UI
 //  - No preview
-//  - No Metal
-//  - No RS
+//  - No Metal presentation
 //  - No lifecycle
+//  - No authority
 //
 
 import UIKit
@@ -18,7 +18,17 @@ import UIKit
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
+
+    // ---------------------------------------------------------------------
+    // MARK: - Phase Probes (mutually exclusive)
+    // ---------------------------------------------------------------------
+
     private var phase1Probe: Phase1CaptureProbe?
+    private var phase2Probe: Phase2CaptureRSProbe?
+
+    // ---------------------------------------------------------------------
+    // MARK: - Scene Entry
+    // ---------------------------------------------------------------------
 
     func scene(
         _ scene: UIScene,
@@ -26,30 +36,50 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
 
-        // ---------------------------------------------------------
-        // macOS (Catalyst) — OFFLINE / NON-INTERACTIVE MODE
-        // ---------------------------------------------------------
 #if targetEnvironment(macCatalyst)
-        // 🚫 No UI, no capture
+        // 🚫 macOS Catalyst: no capture, no probes
         return
-
-        // ---------------------------------------------------------
-        // iOS — PHASE 1 CAPTURE PROBE
-        // ---------------------------------------------------------
 #else
         guard scene is UIWindowScene else { return }
 
-        // ❌ Do NOT create a window or view controller
-        // ❌ Do NOT attach preview layers
-        // ❌ Do NOT touch Metal or RS
+        // =========================================================
+        // 🔀 PHASE SELECTOR
+        // =========================================================
+        //
+        // Exactly ONE probe may be active.
+        // Phase-2 is default once wiring is verified.
+        //
+        // =========================================================
 
-        let probe = Phase1CaptureProbe()
-        self.phase1Probe = probe
+        let runPhase2 = true   // ⬅️ toggle if needed
 
-        // 🔬 Start clean-room capture cadence test
-        probe.start(targetFPS: 120)
+        if runPhase2 {
 
-        print("🧪 Phase 1 Capture Probe running — no UI attached")
+            // -----------------------------------------------------
+            // PHASE 2 — FAST9 → RS OBSERVABILITY (HEADLESS)
+            // -----------------------------------------------------
+
+            let probe = Phase2CaptureRSProbe()
+            self.phase2Probe = probe
+
+            // ✅ Correct API: requestedFPS
+            probe.start(requestedFPS: 120)
+
+            print("🧪 Phase 2 RS Observability Probe running — headless, no UI")
+
+        } else {
+
+            // -----------------------------------------------------
+            // PHASE 1 — CAPTURE CADENCE ONLY (HEADLESS)
+            // -----------------------------------------------------
+
+            let probe = Phase1CaptureProbe()
+            self.phase1Probe = probe
+
+            probe.start(targetFPS: 120)
+
+            print("🧪 Phase 1 Capture Probe running — headless, no UI")
+        }
 #endif
     }
 }
