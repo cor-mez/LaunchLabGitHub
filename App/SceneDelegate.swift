@@ -45,10 +45,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // =========================================================
         // 🔀 PHASE SELECTOR
         // =========================================================
-        //
         // Exactly ONE probe may be active.
-        // Phase-2 is default once wiring is verified.
-        //
         // =========================================================
 
         let runPhase2 = true   // ⬅️ toggle if needed
@@ -62,8 +59,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let probe = Phase2CaptureRSProbe()
             self.phase2Probe = probe
 
-            // ✅ Correct API: requestedFPS
-            probe.start(requestedFPS: 120)
+            // ✅ Correct call signature
+            probe.start(targetFPS: 120)
 
             print("🧪 Phase 2 RS Observability Probe running — headless, no UI")
 
