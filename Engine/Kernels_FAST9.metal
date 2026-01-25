@@ -23,13 +23,16 @@ constant int2 FAST9_OFFSETS[16] = {
 
 kernel void k_fast9_gpu(
     texture2d<float, access::read>  src [[ texture(0) ]],
-    texture2d<float, access::write> dst [[ texture(1) ]],
-    constant int& threshold              [[ buffer(0) ]],
+    device uchar* binaryOut [[ buffer(0) ]],
+    constant uint& stride [[ buffer(1) ]],
+    constant int& threshold [[ buffer(2) ]],
     uint2 gid [[ thread_position_in_grid ]]
 ) {
     uint w = src.get_width();
     uint h = src.get_height();
     if (gid.x >= w || gid.y >= h) return;
+
+    uint idx = gid.y * stride + gid.x;
 
     int2 p = int2(gid);
 
@@ -67,12 +70,12 @@ kernel void k_fast9_gpu(
         }
 
         if (brightRun >= 9 || darkRun >= 9) {
-            dst.write(float4(1.0), gid);
+            binaryOut[idx] = 1;
             return;
         }
     }
 
-    dst.write(float4(0.0), gid);
+    binaryOut[idx] = 0;
 }
 
 // -----------------------------------------------------------------------------
@@ -81,13 +84,16 @@ kernel void k_fast9_gpu(
 
 kernel void k_fast9_score_gpu(
     texture2d<float, access::read>  src [[ texture(0) ]],
-    texture2d<float, access::write> dst [[ texture(1) ]],
-    constant int& threshold              [[ buffer(0) ]],
+    device float* scoreOut [[ buffer(0) ]],
+    constant uint& stride [[ buffer(1) ]],
+    constant int& threshold [[ buffer(2) ]],
     uint2 gid [[ thread_position_in_grid ]]
 ) {
     uint w = src.get_width();
     uint h = src.get_height();
     if (gid.x >= w || gid.y >= h) return;
+
+    uint idx = gid.y * stride + gid.x;
 
     int2 p = int2(gid);
     float center = src.read(uint2(p)).r * 255.0;
@@ -107,5 +113,5 @@ kernel void k_fast9_score_gpu(
     }
 
     float score = clamp(float(support) / 16.0, 0.0, 1.0);
-    dst.write(float4(score), gid);
+    scoreOut[idx] = score;
 }

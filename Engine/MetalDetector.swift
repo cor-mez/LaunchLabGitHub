@@ -1,320 +1,234 @@
+//
+//  MetalDetector.swift
+//  LaunchLab
+//
+//  PHASE 2 — FAST9 GPU Observability
+//
+//  ROLE (STRICT):
+//  - Execute FAST9 kernels on GPU
+//  - Emit scored corner points ONLY
+//  - No UI
+//  - No authority
+//  - No synthetic data
+//
+
 import Foundation
 import Metal
-import CoreVideo
 import CoreGraphics
-import simd
 import QuartzCore
 
 final class MetalDetector {
 
     static let shared = MetalDetector()
 
-    // MARK: - Public Types
-    struct ScoredPoint {
-        let point: CGPoint
-        let score: Float   // normalized 0–1
-    }
+    // ---------------------------------------------------------------------
+    // MARK: - Metal Core
+    // ---------------------------------------------------------------------
 
-    // MARK: - Metal Base Objects
-    private let device: MTLDevice
-    private let queue: MTLCommandQueue
-    private let library: MTLLibrary
-    private let metalQueue = DispatchQueue(label: "launchlab.metal.detector",
-                                          qos: .userInitiated)
+    let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
 
-    // MARK: - Dynamic Tuning Params
-    var fast9ThresholdY: Int = 10   // Phase-2 discovery threshold
+    private let fast9Pipeline: MTLComputePipelineState
+    private let fast9ScorePipeline: MTLComputePipelineState
 
-    // MARK: - Compute Pipelines
-    private lazy var p_extractY: MTLComputePipelineState = makePipeline("k_y_extract")
-    private lazy var p_edgeY:    MTLComputePipelineState = makePipeline("k_y_edge")
-    private lazy var p_fast9:    MTLComputePipelineState = makePipeline("k_fast9_gpu")
-    private lazy var p_fast9Score: MTLComputePipelineState = makePipeline("k_fast9_score_gpu")
-    private lazy var p_roiCrop: MTLComputePipelineState = makePipeline("k_roi_crop_y")
-
-    // MARK: - Working Texture Container
-    struct Working {
-        var texYFull: MTLTexture?
-    }
-    private(set) var work = Working()
-
+    // ---------------------------------------------------------------------
     // MARK: - Init
+    // ---------------------------------------------------------------------
+
     private init() {
-        device  = MetalRenderer.shared.device
-        queue   = MetalRenderer.shared.queue
-        library = MetalRenderer.shared.library
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let library = device.makeDefaultLibrary()
+        else {
+            fatalError("Metal unavailable")
+        }
+
+        self.device = device
+        self.commandQueue = queue
+
+        do {
+            let fast9 = library.makeFunction(name: "k_fast9_gpu")!
+            let score = library.makeFunction(name: "k_fast9_score_gpu")!
+
+            self.fast9Pipeline = try device.makeComputePipelineState(function: fast9)
+            self.fast9ScorePipeline = try device.makeComputePipelineState(function: score)
+        } catch {
+            fatalError("Failed to build FAST9 pipelines: \(error)")
+        }
     }
 
-    private func makePipeline(_ name: String) -> MTLComputePipelineState {
-        let fn = library.makeFunction(name: name)!
-        return try! device.makeComputePipelineState(function: fn)
-    }
+    // ---------------------------------------------------------------------
+    // MARK: - Public API
+    // ---------------------------------------------------------------------
 
-    // MARK: - Frame Preparation & FAST9 (ASYNC)
-    func prepareFrameY(
-        _ pb: CVPixelBuffer,
-        roi: CGRect,
-        srScale: Float,
-        completion: @escaping ([ScoredPoint]) -> Void
+    /// Executes FAST9 + score kernels and returns scored points.
+    /// Safe for Phase-2 observability.
+    func detectFAST9(
+        srcTexture: MTLTexture,
+        threshold: Int,
+        completion: @escaping ([CGPoint]) -> Void
     ) {
-        metalQueue.async {
+        guard let cmd = commandQueue.makeCommandBuffer() else {
+            completion([])
+            return
+        }
 
-            let fullWidth  = CVPixelBufferGetWidth(pb)
-            let fullHeight = CVPixelBufferGetHeight(pb)
+        let width = srcTexture.width
+        let height = srcTexture.height
+        let stride = width
 
-            let roiInt = CGRect(
-                x: max(0, min(fullWidth  - 1, Int(roi.origin.x))),
-                y: max(0, min(fullHeight - 1, Int(roi.origin.y))),
-                width:  max(1, min(fullWidth  - Int(roi.origin.x), Int(roi.width))),
-                height: max(1, min(fullHeight - Int(roi.origin.y), Int(roi.height)))
+        let pixelCount = width * height
+
+        // -------------------------------------------------------------
+        // Output buffers (CPU-readable)
+        // -------------------------------------------------------------
+
+        guard
+            let binaryBuffer = device.makeBuffer(
+                length: pixelCount,
+                options: .storageModeShared
+            ),
+            let scoreBuffer = device.makeBuffer(
+                length: pixelCount * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+        else {
+            completion([])
+            return
+        }
+
+        // -------------------------------------------------------------
+        // Encode FAST9 binary kernel
+        // -------------------------------------------------------------
+
+        encodeFAST9Binary(
+            cmd: cmd,
+            src: srcTexture,
+            binaryOut: binaryBuffer,
+            stride: stride,
+            threshold: threshold,
+            width: width,
+            height: height
+        )
+
+        // -------------------------------------------------------------
+        // Encode FAST9 score kernel
+        // -------------------------------------------------------------
+
+        encodeFAST9Score(
+            cmd: cmd,
+            src: srcTexture,
+            scoreOut: scoreBuffer,
+            stride: stride,
+            threshold: threshold,
+            width: width,
+            height: height
+        )
+
+        // -------------------------------------------------------------
+        // Completion handler — SAFE CPU readback
+        // -------------------------------------------------------------
+
+        cmd.addCompletedHandler { _ in
+            let binary = binaryBuffer.contents().bindMemory(
+                to: UInt8.self,
+                capacity: pixelCount
+            )
+            let scores = scoreBuffer.contents().bindMemory(
+                to: Float.self,
+                capacity: pixelCount
             )
 
-            guard roiInt.width > 0, roiInt.height > 0 else {
-                completion([])
-                return
-            }
+            var points: [CGPoint] = []
+            points.reserveCapacity(512)
 
-            self.ensureFullYTexture(from: pb)
-            guard let texYFull = self.work.texYFull else {
-                completion([])
-                return
-            }
-
-            let roiWidth  = Int(roiInt.width)
-            let roiHeight = Int(roiInt.height)
-
-            guard
-                let roiTexY         = self.makeR8Optional(roiWidth, roiHeight),
-                let roiTexEdge      = self.makeR8Optional(roiWidth, roiHeight),
-                let roiTexFast9Bin  = self.makeFAST9TextureOptional(width: roiWidth, height: roiHeight),
-                let roiTexFast9Score = self.makeFAST9TextureOptional(width: roiWidth, height: roiHeight)
-            else {
-                completion([])
-                return
-            }
-
-            guard let commandBuffer = self.queue.makeCommandBuffer() else {
-                completion([])
-                return
-            }
-
-            // Y extract
-            guard let srcTexture = self.makeTextureFromPixelBuffer(pb, plane: 0) else {
-                completion([])
-                return
-            }
-
-            self.encodeKernel(
-                commandBuffer: commandBuffer,
-                pipeline: self.p_extractY,
-                src: srcTexture,
-                dst: texYFull
-            )
-
-            // ROI crop
-            var ox = UInt32(roiInt.origin.x)
-            var oy = UInt32(roiInt.origin.y)
-
-            self.encodeROICrop(
-                commandBuffer: commandBuffer,
-                src: texYFull,
-                dst: roiTexY,
-                ox: &ox,
-                oy: &oy
-            )
-
-            // Edge + FAST9
-            self.encodeKernel(
-                commandBuffer: commandBuffer,
-                pipeline: self.p_edgeY,
-                src: roiTexY,
-                dst: roiTexEdge
-            )
-
-            self.encodeKernel(
-                commandBuffer: commandBuffer,
-                pipeline: self.p_fast9,
-                src: roiTexEdge,
-                dst: roiTexFast9Bin,
-                threshold: self.fast9ThresholdY
-            )
-
-            self.encodeKernel(
-                commandBuffer: commandBuffer,
-                pipeline: self.p_fast9Score,
-                src: roiTexEdge,
-                dst: roiTexFast9Score,
-                threshold: self.fast9ThresholdY
-            )
-
-            let width  = roiWidth
-            let height = roiHeight
-
-            commandBuffer.addCompletedHandler { _ in
-                let readStart = CACurrentMediaTime()
-
-                var binData   = [Float](repeating: 0, count: width * height)
-                var scoreData = [Float](repeating: 0, count: width * height)
-
-                roiTexFast9Bin.getBytes(
-                    &binData,
-                    bytesPerRow: width * MemoryLayout<Float>.size,
-                    from: MTLRegionMake2D(0, 0, width, height),
-                    mipmapLevel: 0
-                )
-
-                roiTexFast9Score.getBytes(
-                    &scoreData,
-                    bytesPerRow: width * MemoryLayout<Float>.size,
-                    from: MTLRegionMake2D(0, 0, width, height),
-                    mipmapLevel: 0
-                )
-
-                var results: [ScoredPoint] = []
-
-                for y in 0..<height {
-                    for x in 0..<width {
-                        let i = y * width + x
-                        if binData[i] > 0 {
-                            results.append(
-                                ScoredPoint(
-                                    point: CGPoint(
-                                        x: x + Int(ox),
-                                        y: y + Int(oy)
-                                    ),
-                                    score: scoreData[i]
-                                )
-                            )
+            for y in 0..<height {
+                for x in 0..<width {
+                    let idx = y * stride + x
+                    if binary[idx] != 0 {
+                        let s = scores[idx]
+                        if s > 0 {
+                            points.append(CGPoint(x: x, y: y))
                         }
                     }
                 }
-
-                let latencyMs = Float((CACurrentMediaTime() - readStart) * 1000.0)
-
-                TelemetryRingBuffer.shared.push(
-                    phase: .detection,
-                    code: 0x40,                      // FAST9 readback
-                    valueA: Float(results.count),
-                    valueB: latencyMs
-                )
-
-                DispatchQueue.global().async {
-                    completion(results)
-                }
             }
 
-            commandBuffer.commit()
+            completion(points)
         }
+
+        cmd.commit()
     }
 
-    // MARK: - Working Textures
-    private func ensureFullYTexture(from pb: CVPixelBuffer) {
-        let w = CVPixelBufferGetWidth(pb)
-        let h = CVPixelBufferGetHeight(pb)
-        if work.texYFull == nil ||
-            work.texYFull!.width != w ||
-            work.texYFull!.height != h {
-            work.texYFull = makeR8(w, h)
-        }
-    }
+    // ---------------------------------------------------------------------
+    // MARK: - Kernel Encoding (CORRECT ARGUMENT BINDING)
+    // ---------------------------------------------------------------------
 
-    private func makeR8(_ w: Int, _ h: Int) -> MTLTexture {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm,
-            width: w,
-            height: h,
-            mipmapped: false
-        )
-        d.usage = [.shaderRead, .shaderWrite]
-        d.storageMode = .private
-        return device.makeTexture(descriptor: d)!
-    }
-
-    private func makeR8Optional(_ w: Int, _ h: Int) -> MTLTexture? {
-        guard w > 0, h > 0 else { return nil }
-        return makeR8(w, h)
-    }
-
-    private func makeFAST9Texture(width: Int, height: Int) -> MTLTexture {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        d.usage = [.shaderRead, .shaderWrite]
-        d.storageMode = .private
-        return device.makeTexture(descriptor: d)!
-    }
-
-    private func makeFAST9TextureOptional(width: Int, height: Int) -> MTLTexture? {
-        guard width > 0, height > 0 else { return nil }
-        return makeFAST9Texture(width: width, height: height)
-    }
-
-    // MARK: - Kernel Encoding
-    private func encodeKernel(
-        commandBuffer: MTLCommandBuffer,
-        pipeline: MTLComputePipelineState,
+    private func encodeFAST9Binary(
+        cmd: MTLCommandBuffer,
         src: MTLTexture,
-        dst: MTLTexture,
-        threshold: Int? = nil
+        binaryOut: MTLBuffer,
+        stride: Int,
+        threshold: Int,
+        width: Int,
+        height: Int
     ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(src, index: 0)
-        encoder.setTexture(dst, index: 1)
-        if var t = threshold {
-            encoder.setBytes(&t, length: MemoryLayout<Int>.size, index: 0)
-        }
+        guard let enc = cmd.makeComputeCommandEncoder() else { return }
+
+        enc.setComputePipelineState(fast9Pipeline)
+
+        // ⬇️ MUST MATCH Kernels_FAST9.metal EXACTLY
+        enc.setTexture(src, index: 0)                // texture(0)
+        enc.setBuffer(binaryOut, offset: 0, index: 0) // buffer(0)
+        var strideU = UInt32(stride)
+        enc.setBytes(&strideU, length: 4, index: 1)   // buffer(1)
+        var thresh = threshold
+        enc.setBytes(&thresh, length: 4, index: 2)    // buffer(2)
+
+        dispatch(enc, pipeline: fast9Pipeline, width: width, height: height)
+        enc.endEncoding()
+    }
+
+    private func encodeFAST9Score(
+        cmd: MTLCommandBuffer,
+        src: MTLTexture,
+        scoreOut: MTLBuffer,
+        stride: Int,
+        threshold: Int,
+        width: Int,
+        height: Int
+    ) {
+        guard let enc = cmd.makeComputeCommandEncoder() else { return }
+
+        enc.setComputePipelineState(fast9ScorePipeline)
+
+        enc.setTexture(src, index: 0)
+        enc.setBuffer(scoreOut, offset: 0, index: 0)
+        var strideU = UInt32(stride)
+        enc.setBytes(&strideU, length: 4, index: 1)
+        var thresh = threshold
+        enc.setBytes(&thresh, length: 4, index: 2)
+
+        dispatch(enc, pipeline: fast9ScorePipeline, width: width, height: height)
+        enc.endEncoding()
+    }
+
+    // ---------------------------------------------------------------------
+    // MARK: - Dispatch Helper
+    // ---------------------------------------------------------------------
+
+    private func dispatch(
+        _ enc: MTLComputeCommandEncoder,
+        pipeline: MTLComputePipelineState,
+        width: Int,
+        height: Int
+    ) {
         let w = pipeline.threadExecutionWidth
         let h = max(1, pipeline.maxTotalThreadsPerThreadgroup / w)
-        encoder.dispatchThreads(
-            MTLSize(width: dst.width, height: dst.height, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1)
-        )
-        encoder.endEncoding()
-    }
 
-    private func encodeROICrop(
-        commandBuffer: MTLCommandBuffer,
-        src: MTLTexture,
-        dst: MTLTexture,
-        ox: inout UInt32,
-        oy: inout UInt32
-    ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        encoder.setComputePipelineState(p_roiCrop)
-        encoder.setTexture(src, index: 0)
-        encoder.setTexture(dst, index: 1)
-        encoder.setBytes(&ox, length: 4, index: 0)
-        encoder.setBytes(&oy, length: 4, index: 1)
-        encoder.dispatchThreads(
-            MTLSize(width: dst.width, height: dst.height, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
-        )
-        encoder.endEncoding()
-    }
+        let threadsPerGroup = MTLSize(width: w, height: h, depth: 1)
+        let threadsPerGrid = MTLSize(width: width, height: height, depth: 1)
 
-    // MARK: - PixelBuffer → Texture
-    private func makeTextureFromPixelBuffer(
-        _ pb: CVPixelBuffer,
-        plane: Int
-    ) -> MTLTexture? {
-        var tmp: CVMetalTexture?
-        let w = CVPixelBufferGetWidthOfPlane(pb, plane)
-        let h = CVPixelBufferGetHeightOfPlane(pb, plane)
-        CVMetalTextureCacheCreateTextureFromImage(
-            nil,
-            MetalRenderer.shared.textureCache,
-            pb,
-            nil,
-            .r8Unorm,
-            w,
-            h,
-            plane,
-            &tmp
-        )
-        return tmp.flatMap { CVMetalTextureGetTexture($0) }
+        enc.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerGroup)
     }
 }

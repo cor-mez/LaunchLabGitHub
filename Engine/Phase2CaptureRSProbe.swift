@@ -17,6 +17,7 @@ import AVFoundation
 import CoreMedia
 import CoreGraphics
 import QuartzCore
+import Metal
 
 final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
@@ -26,13 +27,15 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private let session = AVCaptureSession()
     private let output  = AVCaptureVideoDataOutput()
-
     private let queue = DispatchQueue(
         label: "phase2.capture.queue",
         qos: .userInteractive
     )
-
     private var videoDevice: AVCaptureDevice?
+
+    // Metal related
+    private let metalDevice: MTLDevice
+    private var textureCache: CVMetalTextureCache?
 
     // ---------------------------------------------------------------------
     // MARK: - Observers (OBSERVATION ONLY)
@@ -40,6 +43,23 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private let detector = MetalDetector.shared
     private let rsProbe  = RSObservabilityProbe()
+
+    // ---------------------------------------------------------------------
+    // MARK: - Initialization
+    // ---------------------------------------------------------------------
+
+    override init() {
+        guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
+            fatalError("Metal device unavailable")
+        }
+        self.metalDevice = mtlDevice
+        super.init()
+
+        let cacheResult = CVMetalTextureCacheCreate(nil, nil, metalDevice, nil, &textureCache)
+        if cacheResult != kCVReturnSuccess {
+            fatalError("Failed to create Metal texture cache")
+        }
+    }
 
     // ---------------------------------------------------------------------
     // MARK: - Public API
@@ -176,36 +196,58 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
             return
         }
 
-        let fullROI = CGRect(
-            x: 0,
-            y: 0,
-            width: CVPixelBufferGetWidth(pixelBuffer),
-            height: CVPixelBufferGetHeight(pixelBuffer)
+        guard let textureCache = textureCache else {
+            TelemetryRingBuffer.shared.push(
+                phase: .detection,
+                code: 0xEF
+            )
+            return
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+
+        var cvTextureOut: CVMetalTexture?
+        let pixelFormat = MTLPixelFormat.bgra8Unorm
+
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            nil,
+            textureCache,
+            pixelBuffer,
+            nil,
+            pixelFormat,
+            width,
+            height,
+            0,
+            &cvTextureOut
         )
+
+        guard status == kCVReturnSuccess, let cvTexture = cvTextureOut,
+              let texture = CVMetalTextureGetTexture(cvTexture) else {
+            TelemetryRingBuffer.shared.push(
+                phase: .detection,
+                code: 0xF0
+            )
+            return
+        }
 
         // -----------------------------------------------------------------
         // FAST9 → RS (CORRECT APIs)
         // -----------------------------------------------------------------
 
-        detector.prepareFrameY(
-            pixelBuffer,
-            roi: fullROI,
-            srScale: 1.0
-        ) { [weak self] scoredPoints in
-            guard let self else { return }
+        detector.detectFAST9(srcTexture: texture, threshold: 20) { [weak self] (points: [CGPoint]) in
+            guard let self = self else { return }
 
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
                 code: 0x41,
-                valueA: Float(scoredPoints.count),
+                valueA: Float(points.count),
                 valueB: 0
             )
 
-            let rsPoints = scoredPoints.map { $0.point }
-
             let observation = self.rsProbe.evaluate(
-                points: rsPoints,
-                imageHeight: CVPixelBufferGetHeight(pixelBuffer),
+                points: points,
+                imageHeight: height,
                 timestamp: timestamp
             )
 
