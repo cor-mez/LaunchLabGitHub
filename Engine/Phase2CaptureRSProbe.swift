@@ -255,7 +255,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 phase: .detection,
                 code: 0x42,
                 valueA: observation.zmax,
-                valueB: Float(observation.validRowCount)
+                valueB: observation.rowSpanFraction
             )
         }
     }

@@ -1,204 +1,200 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 # ============================================================
-# Telemetry event codes (Phase-2)
+# Telemetry event codes (Phase-4 aligned)
 # ============================================================
 
-FAST9_CODE         = 0x41
-RS_METRIC_CODE     = 0x20    # zmax + point count
-LOCALITY_CODE      = 0x21    # rowSpanFraction + adjacentRowCorrelation
-STRUCTURE_CODE     = 0x22    # structureRatio + peakRowEnergy
+FAST9_CODE          = 0x41
+RS_METRIC_CODE      = 0x20
+LOCALITY_CODE       = 0x21
+STRUCTURE_CODE      = 0x22
 
-# Outcome / classification
-OBSERVABLE_CODE    = 0x55
+PHASE3_SUMMARY_CODE = 0x80
+PHASE3_SPAN_CODE    = 0x81
+PHASE3_OUTCOME_CODE = 0x82
 
-# Row-span classification
-SPAN_NARROW_CODE   = 0x61
-SPAN_MODERATE_CODE = 0x62
-SPAN_WIDE_CODE     = 0x63
-
-# Refusals
-REFUSE_LOW_SLOPE     = 0x53
-REFUSE_GLOBAL        = 0x52
-REFUSE_FLICKER       = 0x54
-REFUSE_INSUFFICIENT  = 0x50
+PHASE4_PASS_CODE    = 0x90
+PHASE4_FAIL_CODE    = 0x91
 
 # ============================================================
-# Load CSV
+# CLI handling (BATCH MODE + LABELS)
 # ============================================================
 
-if len(sys.argv) != 2:
-    print("Usage: python analyze_rs.py <telemetry.csv>")
+if len(sys.argv) < 2:
+    print("Usage: python analyze_rs.py <file.csv[:label]> ...")
     sys.exit(1)
 
-csv_path = sys.argv[1]
-df = pd.read_csv(csv_path)
-
-# Drop default / empty rows
-df = df[df["timestamp"] > 0].copy()
-
-if df.empty:
-    print("CSV contains no telemetry events.")
-    sys.exit(0)
-
-# ============================================================
-# Split event types
-# ============================================================
-
-fast9      = df[df["code"] == FAST9_CODE]
-rs         = df[df["code"] == RS_METRIC_CODE]
-locality   = df[df["code"] == LOCALITY_CODE]
-structure  = df[df["code"] == STRUCTURE_CODE]
-
-observable = df[df["code"] == OBSERVABLE_CODE]
-
-span_narrow   = df[df["code"] == SPAN_NARROW_CODE]
-span_moderate = df[df["code"] == SPAN_MODERATE_CODE]
-span_wide     = df[df["code"] == SPAN_WIDE_CODE]
+inputs = []
+for arg in sys.argv[1:]:
+    if ":" in arg:
+        path, label = arg.split(":", 1)
+    else:
+        path = arg
+        label = os.path.basename(arg)
+    inputs.append((path, label))
 
 # ============================================================
-# Summary stats
+# Helpers
 # ============================================================
 
-print("\n=== RS Phase-2 Telemetry Summary ===")
-print(f"Total events: {len(df)}")
-print(f"FAST9 events: {len(fast9)}")
-print(f"RS metric frames: {len(rs)}")
-print(f"Observable frames: {len(observable)}")
+def load_csv(path):
+    df = pd.read_csv(path)
+    df = df[df["timestamp"] > 0].copy()
+    if df.empty:
+        return None
+    return df.sort_values("timestamp").reset_index(drop=True)
 
-if not rs.empty:
-    print(f"zmax median: {rs['valueA'].median():.6f}")
-    print(f"zmax max:    {rs['valueA'].max():.6f}")
-
-if not locality.empty:
-    print(f"row span median: {locality['valueA'].median():.3f}")
-    print(f"row span max:    {locality['valueA'].max():.3f}")
-
-if not structure.empty:
-    print(f"structure ratio median: {structure['valueA'].median():.3f}")
-    print(f"structure ratio max:    {structure['valueA'].max():.3f}")
-
-print("\nRow-span classification counts:")
-print(f"  narrow:   {len(span_narrow)}")
-print(f"  moderate: {len(span_moderate)}")
-print(f"  wide:     {len(span_wide)}")
-
-print("\nRefusal counts:")
-print(f"  insufficient points: {len(df[df['code']==REFUSE_INSUFFICIENT])}")
-print(f"  low slope:           {len(df[df['code']==REFUSE_LOW_SLOPE])}")
-print(f"  too global:          {len(df[df['code']==REFUSE_GLOBAL])}")
-print(f"  flicker-aligned:     {len(df[df['code']==REFUSE_FLICKER])}")
+def summarize(df):
+    return {
+        "fast9": len(df[df["code"] == FAST9_CODE]),
+        "rs": len(df[df["code"] == RS_METRIC_CODE]),
+        "phase3": len(df[df["code"] == PHASE3_SUMMARY_CODE]),
+        "pass": len(df[df["code"] == PHASE4_PASS_CODE]),
+        "fail": len(df[df["code"] == PHASE4_FAIL_CODE]),
+        "zmax_peak": df[df["code"] == PHASE3_SUMMARY_CODE]["valueA"].max()
+                        if not df[df["code"] == PHASE3_SUMMARY_CODE].empty else 0,
+        "struct_peak": df[df["code"] == PHASE3_SUMMARY_CODE]["valueB"].max()
+                        if not df[df["code"] == PHASE3_SUMMARY_CODE].empty else 0,
+    }
 
 # ============================================================
-# Plot 1: zmax over time
+# Batch PDF export
 # ============================================================
 
-plt.figure(figsize=(10, 4))
-plt.plot(rs["timestamp"], rs["valueA"], ".", alpha=0.6)
-plt.xlabel("Time (s)")
-plt.ylabel("zmax (RS shear)")
-plt.title("RS shear (zmax) over time")
-plt.grid(True)
+pdf_name = "rs_phase4_batch_analysis.pdf"
+print(f"\n📄 Writing batch analysis to {pdf_name}")
 
-# ============================================================
-# Plot 2: FAST9 yield over time
-# ============================================================
+summaries = []
+pass_windows = []   # for PASS-only overlay
 
-plt.figure(figsize=(10, 4))
-plt.plot(fast9["timestamp"], fast9["valueA"], ".", alpha=0.6)
-plt.xlabel("Time (s)")
-plt.ylabel("FAST9 point count")
-plt.title("FAST9 feature yield over time")
-plt.grid(True)
+with PdfPages(pdf_name) as pdf:
 
-# ============================================================
-# Plot 3: Row-span vs zmax
-# ============================================================
+    # --------------------------------------------------------
+    # Cover page
+    # --------------------------------------------------------
+    fig = plt.figure(figsize=(8.5, 11))
+    plt.axis("off")
+    plt.text(0.5, 0.85, "LaunchLab — Phase-4 RS Batch Analysis",
+             ha="center", fontsize=18, weight="bold")
+    plt.text(0.5, 0.75, "Tests included:", ha="center", fontsize=12)
 
-if not locality.empty and not rs.empty:
-    merged_loc = pd.merge_asof(
-        rs.sort_values("timestamp"),
-        locality.sort_values("timestamp"),
-        on="timestamp",
-        tolerance=0.002,
-        direction="nearest",
-        suffixes=("_z", "_loc"),
-    )
+    y = 0.7
+    for _, label in inputs:
+        plt.text(0.5, y, label, ha="center", fontsize=10)
+        y -= 0.035
 
-    plt.figure(figsize=(6, 6))
-    plt.scatter(
-        merged_loc["valueA_loc"],
-        merged_loc["valueA_z"],
-        alpha=0.5
-    )
-    plt.xlabel("Row span fraction")
-    plt.ylabel("zmax")
-    plt.title("RS shear vs row span")
-    plt.grid(True)
+    pdf.savefig(fig)
+    plt.close(fig)
 
-# ============================================================
-# Plot 4: Structure ratio vs zmax (NEW CORE PLOT)
-# ============================================================
+    # --------------------------------------------------------
+    # Per-test analysis
+    # --------------------------------------------------------
+    for path, label in inputs:
 
-if not structure.empty and not rs.empty:
-    merged_struct = pd.merge_asof(
-        rs.sort_values("timestamp"),
-        structure.sort_values("timestamp"),
-        on="timestamp",
-        tolerance=0.002,
-        direction="nearest",
-        suffixes=("_z", "_s"),
-    )
+        df = load_csv(path)
 
-    plt.figure(figsize=(6, 6))
-    plt.scatter(
-        merged_struct["valueA_s"],   # structure ratio
-        merged_struct["valueA_z"],   # zmax
-        alpha=0.5
-    )
-    plt.xlabel("Structure ratio (peak / mean row energy)")
-    plt.ylabel("zmax")
-    plt.title("RS structure vs shear (physics discriminator)")
-    plt.grid(True)
+        if df is None:
+            fig = plt.figure(figsize=(8.5, 11))
+            plt.axis("off")
+            plt.text(0.5, 0.5, f"{label}\n(No telemetry data)",
+                     ha="center", fontsize=14)
+            pdf.savefig(fig)
+            plt.close(fig)
+            continue
 
-# ============================================================
-# Plot 5: Span-class overlay over time
-# ============================================================
+        summary = summarize(df)
+        summary["label"] = label
+        summaries.append(summary)
 
-if not rs.empty:
-    plt.figure(figsize=(10, 4))
-    plt.scatter(rs["timestamp"], rs["valueA"], s=10, alpha=0.15, label="all RS frames")
+        fast9   = df[df["code"] == FAST9_CODE]
+        rs      = df[df["code"] == RS_METRIC_CODE]
+        phase3  = df[df["code"] == PHASE3_SUMMARY_CODE]
+        p4_pass = df[df["code"] == PHASE4_PASS_CODE]
+        p4_fail = df[df["code"] == PHASE4_FAIL_CODE]
 
-    plt.scatter(span_narrow["timestamp"], span_narrow["valueA"],
-                s=30, label="narrow span", marker="o")
-    plt.scatter(span_moderate["timestamp"], span_moderate["valueA"],
-                s=30, label="moderate span", marker="^")
-    plt.scatter(span_wide["timestamp"], span_wide["valueA"],
-                s=30, label="wide span", marker="s")
+        if not p4_pass.empty:
+            tmp = p4_pass.copy()
+            tmp["label"] = label
+            pass_windows.append(tmp)
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("zmax")
-    plt.title("RS frames by row-span class")
-    plt.legend()
-    plt.grid(True)
+        # ---------------- Summary page ----------------
+        fig = plt.figure(figsize=(8.5, 11))
+        plt.axis("off")
+        plt.text(0.5, 0.9, label, ha="center", fontsize=16, weight="bold")
 
-plt.show()
+        info = (
+            f"FAST9 frames: {summary['fast9']}\n"
+            f"RS frames: {summary['rs']}\n"
+            f"Phase-3 windows: {summary['phase3']}\n"
+            f"Phase-4 PASS: {summary['pass']}   FAIL: {summary['fail']}\n\n"
+            f"Peak window zmax: {summary['zmax_peak']:.4f}\n"
+            f"Peak structure consistency: {summary['struct_peak']:.3f}"
+        )
 
-# ============================================================
-# Final interpretation heuristic (NON-authoritative)
-# ============================================================
+        plt.text(0.5, 0.65, info, ha="center", fontsize=12)
+        pdf.savefig(fig)
+        plt.close(fig)
 
-print("\n=== Interpretation Heuristic (NOT authority) ===")
+        # ---------------- RS shear ----------------
+        fig = plt.figure(figsize=(10, 4))
+        plt.scatter(rs["timestamp"], rs["valueA"], s=8, alpha=0.5)
+        plt.xlabel("Time (s)")
+        plt.ylabel("zmax")
+        plt.title("Phase-2 RS shear (frame-level)")
+        plt.grid(True)
+        pdf.savefig(fig)
+        plt.close(fig)
 
-if rs.empty:
-    print("❌ No RS metrics recorded.")
-elif rs["valueA"].max() < 2.5 * rs["valueA"].median():
-    print("⚠️ RS signal exists but weak separation from baseline.")
-    print("→ Increase contrast, marker density, or controlled motion.")
-else:
-    print("✅ RS signal separates from static baseline.")
-    print("→ Phase-2 observability confirmed; proceed to structured validation.")
+        # ---------------- Phase-3 envelopes ----------------
+        fig = plt.figure(figsize=(10, 4))
+        plt.scatter(phase3["timestamp"], phase3["valueA"], s=25, alpha=0.7)
+        plt.xlabel("Time (s)")
+        plt.ylabel("zmaxPeak")
+        plt.title("Phase-3 RS window envelopes")
+        plt.grid(True)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ---------------- Phase-4 verdicts ----------------
+        fig = plt.figure(figsize=(10, 4))
+        plt.scatter(p4_fail["timestamp"], p4_fail["valueA"],
+                    s=40, marker="x", label="FAIL", alpha=0.6)
+        plt.scatter(p4_pass["timestamp"], p4_pass["valueA"],
+                    s=60, marker="o", label="PASS", alpha=0.8)
+        plt.xlabel("Time (s)")
+        plt.ylabel("zmaxPeak")
+        plt.title("Phase-4 PASS / FAIL windows")
+        plt.legend()
+        plt.grid(True)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    # --------------------------------------------------------
+    # PASS-only overlay comparison (NEW)
+    # --------------------------------------------------------
+    if pass_windows:
+        fig = plt.figure(figsize=(10, 6))
+        for dfp in pass_windows:
+            plt.scatter(
+                dfp["valueB"],   # structure consistency
+                dfp["valueA"],   # zmaxPeak
+                s=70,
+                alpha=0.8,
+                label=dfp["label"].iloc[0]
+            )
+
+        plt.xlabel("Structure Consistency")
+        plt.ylabel("zmaxPeak")
+        plt.title("Phase-4 PASS Windows — Cross-Test Comparison")
+        plt.legend()
+        plt.grid(True)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+print("✅ Batch PDF export complete.")
