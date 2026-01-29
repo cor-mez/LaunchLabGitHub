@@ -34,18 +34,35 @@ final class RSPhase3Aggregator: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     private var buffer: [RSFrameObservation] = []
+    private var lastEmittedWindow: RSWindowObservation?
 
     // ---------------------------------------------------------
     // Ingest
     // ---------------------------------------------------------
 
     func ingest(_ frame: RSFrameObservation) {
+        switch frame.outcome {
+        case .observable:
+            // Append observable frames to buffer
+            buffer.append(frame)
+            // Hard cap to prevent unbounded growth
+            if buffer.count > maxWindowFrames {
+                buffer.removeFirst()
+            }
+            // No window emitted on observable frames
+            lastEmittedWindow = nil
 
-        buffer.append(frame)
-
-        // Hard cap to prevent unbounded growth
-        if buffer.count > maxWindowFrames {
-            buffer.removeFirst()
+        case .refused:
+            // Emit window only if we have enough observable frames accumulated
+            if buffer.count >= minWindowFrames {
+                let window = createWindowObservation(from: buffer)
+                lastEmittedWindow = window
+                buffer.removeAll()
+            } else {
+                // Not enough frames to emit window, reset silently
+                buffer.removeAll()
+                lastEmittedWindow = nil
+            }
         }
     }
 
@@ -54,14 +71,30 @@ final class RSPhase3Aggregator: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     func poll() -> RSWindowObservation? {
-
-        guard buffer.count >= minWindowFrames else {
+        // Return the last emitted window once, then clear it
+        guard let window = lastEmittedWindow else {
             return nil
         }
+        lastEmittedWindow = nil
+        return window
+    }
 
-        let frames = buffer
+    // ---------------------------------------------------------
+    // Reset
+    // ---------------------------------------------------------
+
+    func reset() {
         buffer.removeAll()
+        lastEmittedWindow = nil
+    }
 
+    // ---------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------
+
+    /// Create a RSWindowObservation from a buffer of RSFrameObservation
+    /// This encapsulates the existing descriptive metrics calculation.
+    private func createWindowObservation(from frames: [RSFrameObservation]) -> RSWindowObservation {
         let times = frames.map { $0.timestamp }
         let zvals = frames.map { $0.zmax }.sorted()
 
@@ -138,13 +171,5 @@ final class RSPhase3Aggregator: RSPhase3Aggregating {
 
             outcome: outcome
         )
-    }
-
-    // ---------------------------------------------------------
-    // Reset
-    // ---------------------------------------------------------
-
-    func reset() {
-        buffer.removeAll()
     }
 }

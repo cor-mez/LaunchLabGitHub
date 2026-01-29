@@ -22,8 +22,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     private let maxWindowFrames: Int = 8
-    private let minWindowFrames: Int = 3
-    private let maxGapSec: Double = 0.012
+    private let minWindowFrames: Int = 1
 
     // ---------------------------------------------------------
     // State
@@ -31,27 +30,19 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     private var buffer: [RSFrameObservation] = []
     private var pendingWindow: RSWindowObservation?
-    private var lastTimestamp: Double?
 
     // ---------------------------------------------------------
     // Ingest Phase‑2 frames
     // ---------------------------------------------------------
 
     func ingest(_ frame: RSFrameObservation) {
-
-        if let last = lastTimestamp, frame.timestamp - last > maxGapSec {
-            flushIfReady()
-        }
-        lastTimestamp = frame.timestamp
-
         switch frame.outcome {
         case .observable:
             buffer.append(frame)
+            if buffer.count >= maxWindowFrames {
+                flushIfReady()
+            }
         case .refused:
-            flushIfReady()
-        }
-
-        if buffer.count >= maxWindowFrames {
             flushIfReady()
         }
     }
@@ -73,7 +64,6 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     func reset() {
         buffer.removeAll()
         pendingWindow = nil
-        lastTimestamp = nil
     }
 
     // ---------------------------------------------------------
@@ -81,7 +71,6 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     private func flushIfReady() {
-
         guard buffer.count >= minWindowFrames else {
             buffer.removeAll()
             return
@@ -90,8 +79,9 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let frames = buffer
         buffer.removeAll()
 
-        pendingWindow = buildWindow(from: frames)
-        emitTelemetry(pendingWindow!)
+        let window = buildWindow(from: frames)
+        pendingWindow = window
+        emitTelemetry(window)
     }
 
     // ---------------------------------------------------------
@@ -108,7 +98,8 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let zMedian = zValues.sorted()[zValues.count / 2]
 
         let structuredFrames = frames.filter {
-            $0.structureRatio > 0
+            if case .observable = $0.outcome { return true }
+            return false
         }.count
 
         let narrowSpanCount = frames.filter { $0.rowSpanFraction < 0.40 }.count
@@ -119,7 +110,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
             Float(wideSpanCount) / Float(frames.count)
 
         let temporalConsistency =
-            Float(frames.count) / Float(maxWindowFrames)
+            min(1.0, Float(frames.count) / Float(maxWindowFrames))
 
         let structureConsistency =
             Float(structuredFrames) / Float(frames.count)
@@ -177,8 +168,6 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
             valueB: window.temporalConsistency
         )
 
-        /// Phase‑4 is the FIRST layer allowed to emit pass/fail semantics.
-        /// Phase‑3 must remain purely descriptive.
         let verdict = RSPhase4Gate.evaluate(window)
 
         TelemetryRingBuffer.shared.push(

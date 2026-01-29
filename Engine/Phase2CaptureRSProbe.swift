@@ -43,6 +43,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private let detector = MetalDetector.shared
     private let rsProbe  = RSObservabilityProbe()
+    private let phase3Aggregator = RSPhase3Aggregator()
 
     // ---------------------------------------------------------------------
     // MARK: - Initialization
@@ -67,6 +68,9 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     func start(targetFPS: Double = 120) {
         queue.async {
+            // Ensure Phase‑3 aggregation starts clean every run
+            self.phase3Aggregator.reset()
+
             self.configureSession(targetFPS: targetFPS)
             self.session.startRunning()
             print("🧪 Phase 2 RS Observability Probe running — headless, locked capture")
@@ -78,6 +82,9 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
             if self.session.isRunning {
                 self.session.stopRunning()
             }
+
+            // Clear Phase‑3 state when capture stops
+            self.phase3Aggregator.reset()
         }
     }
 
@@ -112,7 +119,8 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
 
-        output.alwaysDiscardsLateVideoFrames = true
+        // Phase‑3 requires short burst continuity; do not discard late frames here
+        output.alwaysDiscardsLateVideoFrames = false
         output.setSampleBufferDelegate(self, queue: queue)
 
         if session.canAddOutput(output) {
@@ -251,12 +259,37 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 timestamp: timestamp
             )
 
+            // Phase‑2 frame telemetry
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
                 code: 0x42,
                 valueA: observation.zmax,
-                valueB: observation.rowSpanFraction
+                valueB: observation.structureRatio
             )
+
+            // Phase‑3 aggregation
+            self.phase3Aggregator.ingest(observation)
+
+            while let window = self.phase3Aggregator.poll() {
+
+                // Phase‑3 window telemetry
+                TelemetryRingBuffer.shared.push(
+                    phase: .detection,
+                    code: 0x80,                 // PHASE3_WINDOW
+                    valueA: window.zmaxPeak,
+                    valueB: window.structureConsistency
+                )
+
+                // Phase‑4 gate evaluation
+                let verdict = RSPhase4Gate.evaluate(window)
+
+                TelemetryRingBuffer.shared.push(
+                    phase: .detection,
+                    code: verdict == .pass ? 0x90 : 0x91,
+                    valueA: window.zmaxPeak,
+                    valueB: window.structureConsistency
+                )
+            }
         }
     }
 }
