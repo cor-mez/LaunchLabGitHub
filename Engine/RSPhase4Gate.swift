@@ -22,54 +22,64 @@ struct RSPhase4Gate {
 
     static func evaluate(_ window: RSWindowObservation) -> RSPhase4Verdict {
 
-        // 1. Minimum data
+        // -----------------------------------------------------
+        // 1. Minimum data sufficiency
+        // -----------------------------------------------------
         guard window.frameCount >= 3 else {
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
-                code: 0x91,
+                code: 0x91, // FAIL: insufficient frames
                 valueA: window.zmaxPeak,
                 valueB: window.structureConsistency
             )
             return .fail
         }
 
-        // 2. Structure present
-        guard window.structureConsistency >= 0.4 else {
+        // -----------------------------------------------------
+        // 2. Require some structured RS presence
+        // -----------------------------------------------------
+        guard window.structuredFrameCount >= 2 else {
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
-                code: 0x91,
+                code: 0x91, // FAIL: no structured frames
                 valueA: window.zmaxPeak,
                 valueB: window.structureConsistency
             )
             return .fail
         }
 
-        // 3. Shear separates from baseline
-        guard window.zmaxPeak >= 2.5 * window.zmaxMedian else {
+        // -----------------------------------------------------
+        // 3. Absolute RS shear threshold (physics-based)
+        // -----------------------------------------------------
+        guard window.zmaxPeak >= 0.015 else {
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
-                code: 0x91,
+                code: 0x91, // FAIL: shear too weak
                 valueA: window.zmaxPeak,
                 valueB: window.structureConsistency
             )
             return .fail
         }
 
-        // 4. Reject pure flicker (but allow wide structured motion)
-        if window.wideSpanFraction >= 0.95 &&
-           window.structureConsistency < 0.6 {
+        // -----------------------------------------------------
+        // 4. Structure consistency (reject uniform flicker)
+        // -----------------------------------------------------
+        guard window.structureConsistency >= 0.45 else {
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
-                code: 0x91,
+                code: 0x91, // FAIL: low structure consistency
                 valueA: window.zmaxPeak,
                 valueB: window.structureConsistency
             )
             return .fail
         }
 
+        // -----------------------------------------------------
+        // PASS: physically plausible RS launch envelope
+        // -----------------------------------------------------
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: 0x90,
+            code: 0x90, // PASS
             valueA: window.zmaxPeak,
             valueB: window.structureConsistency
         )

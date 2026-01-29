@@ -22,7 +22,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     private let maxWindowFrames: Int = 8
-    private let minWindowFrames: Int = 1
+    private let minWindowFrames: Int = 3
 
     // ---------------------------------------------------------
     // State
@@ -36,13 +36,23 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     func ingest(_ frame: RSFrameObservation) {
-        switch frame.outcome {
-        case .observable:
-            buffer.append(frame)
-            if buffer.count >= maxWindowFrames {
-                flushIfReady()
-            }
-        case .refused:
+
+        // Always keep a rolling buffer
+        buffer.append(frame)
+
+        // Hard cap buffer size
+        if buffer.count > maxWindowFrames {
+            buffer.removeFirst()
+        }
+
+        // Count observable frames inside the window
+        let observableCount = buffer.filter {
+            if case .observable = $0.outcome { return true }
+            return false
+        }.count
+
+        // Emit window as soon as we have enough observable structure
+        if observableCount >= minWindowFrames {
             flushIfReady()
         }
     }
@@ -71,17 +81,22 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     private func flushIfReady() {
-        guard buffer.count >= minWindowFrames else {
-            buffer.removeAll()
-            return
+
+        let frames = buffer.filter {
+            if case .observable = $0.outcome { return true }
+            return false
         }
 
-        let frames = buffer
-        buffer.removeAll()
+        guard frames.count >= minWindowFrames else {
+            return
+        }
 
         let window = buildWindow(from: frames)
         pendingWindow = window
         emitTelemetry(window)
+
+        // Clear buffer AFTER emission
+        buffer.removeAll()
     }
 
     // ---------------------------------------------------------

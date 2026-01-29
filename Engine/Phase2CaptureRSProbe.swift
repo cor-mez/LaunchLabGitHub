@@ -43,7 +43,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private let detector = MetalDetector.shared
     private let rsProbe  = RSObservabilityProbe()
-    private let phase3Aggregator = RSPhase3Aggregator()
+    private let phase3Aggregator = RSWindowAggregatorImpl()
 
     // ---------------------------------------------------------------------
     // MARK: - Initialization
@@ -267,10 +267,25 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 valueB: observation.structureRatio
             )
 
-            // Phase‑3 aggregation
+            // Phase‑3 aggregation (DEBUG: prove ingest is happening)
+            TelemetryRingBuffer.shared.push(
+                phase: .detection,
+                code: 0x7F,              // DEBUG_PHASE3_INGEST
+                valueA: observation.zmax,
+                valueB: observation.structureRatio
+            )
+
             self.phase3Aggregator.ingest(observation)
 
             while let window = self.phase3Aggregator.poll() {
+
+                // DEBUG: Phase‑3 window actually emitted
+                TelemetryRingBuffer.shared.push(
+                    phase: .detection,
+                    code: 0x7E,          // DEBUG_PHASE3_WINDOW
+                    valueA: Float(window.frameCount),
+                    valueB: window.zmaxPeak
+                )
 
                 // Phase‑3 window telemetry
                 TelemetryRingBuffer.shared.push(
