@@ -20,7 +20,7 @@ final class RSObservabilityProbe {
     private let minSlope: Float = 0.0001
     private let maxFlickerCorrelation: Float = 0.85
 
-    enum RowSpanClass {
+    public enum RowSpanClass: String {
         case narrow
         case moderate
         case wide
@@ -68,6 +68,13 @@ final class RSObservabilityProbe {
 
         let rowCorrelation =
             rows.count > 1 ? Float(adj) / Float(rows.count - 1) : 0
+
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: 0x23,                  // ROW_CORRELATION_METRIC
+            valueA: rowCorrelation,
+            valueB: Float(rows.count)
+        )
 
         // -----------------------------------------------------
         // Structure ratio (NEW CORE METRIC)
@@ -120,13 +127,13 @@ final class RSObservabilityProbe {
 
         if spanFraction < 0.25 {
             rowSpanClass = .narrow
-            rowSpanTelemetryCode = 0x61 as UInt16
+            rowSpanTelemetryCode = 0x61
         } else if spanFraction < 0.65 {
             rowSpanClass = .moderate
-            rowSpanTelemetryCode = 0x62 as UInt16
+            rowSpanTelemetryCode = 0x62
         } else {
             rowSpanClass = .wide
-            rowSpanTelemetryCode = 0x63 as UInt16
+            rowSpanTelemetryCode = 0x63
         }
 
         TelemetryRingBuffer.shared.push(
@@ -150,17 +157,14 @@ final class RSObservabilityProbe {
             return RSFrameObservation.refused(timestamp, .frameIntegrityFailure)
         }
 
-        if rowCorrelation > maxFlickerCorrelation {
+        if rowCorrelation > maxFlickerCorrelation && structureRatio < 2.0 {
             TelemetryRingBuffer.shared.push(
                 phase: .detection,
                 code: 0x54,
                 valueA: rowCorrelation,
-                valueB: 0
+                valueB: structureRatio
             )
-            // Flicker rejection only if structureRatio < 2.0 (flat energy)
-            if structureRatio < 2.0 {
-                return RSFrameObservation.refused(timestamp, .globalRowCorrelation)
-            }
+            return RSFrameObservation.refused(timestamp, .globalRowCorrelation)
         }
 
         TelemetryRingBuffer.shared.push(

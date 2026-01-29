@@ -5,9 +5,9 @@
 //  PHASE 3 — Temporal RS Envelope Aggregation (IMPLEMENTATION)
 //
 //  ROLE (STRICT):
-//  - Aggregate Phase-2 RSFrameObservation frames
+//  - Aggregate Phase‑2 RSFrameObservation frames
 //  - Describe short RS bursts over time
-//  - Observability-only
+//  - Observability‑only
 //  - NO authority
 //  - NO shot decisions
 //  - NO smoothing
@@ -18,29 +18,36 @@ import Foundation
 final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     // ---------------------------------------------------------
-    // Configuration (Phase-3 safe defaults)
+    // Configuration (Phase‑3 safe defaults)
     // ---------------------------------------------------------
 
     private let maxWindowFrames: Int = 8
     private let minWindowFrames: Int = 3
+    private let maxGapSec: Double = 0.012
 
     // ---------------------------------------------------------
     // State
     // ---------------------------------------------------------
 
     private var buffer: [RSFrameObservation] = []
+    private var pendingWindow: RSWindowObservation?
+    private var lastTimestamp: Double?
 
     // ---------------------------------------------------------
-    // Ingest Phase-2 frames
+    // Ingest Phase‑2 frames
     // ---------------------------------------------------------
 
     func ingest(_ frame: RSFrameObservation) {
 
-        // Phase-3 ingests *all* frames
-        // (observable + refused), but only aggregates observables
-        if case .observable = frame.outcome {
+        if let last = lastTimestamp, frame.timestamp - last > maxGapSec {
+            flushIfReady()
+        }
+        lastTimestamp = frame.timestamp
+
+        switch frame.outcome {
+        case .observable:
             buffer.append(frame)
-        } else {
+        case .refused:
             flushIfReady()
         }
 
@@ -54,9 +61,9 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     func poll() -> RSWindowObservation? {
-        // Aggregation happens eagerly during ingest
-        // poll() is intentionally passive
-        return nil
+        let w = pendingWindow
+        pendingWindow = nil
+        return w
     }
 
     // ---------------------------------------------------------
@@ -65,10 +72,12 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     func reset() {
         buffer.removeAll()
+        pendingWindow = nil
+        lastTimestamp = nil
     }
 
     // ---------------------------------------------------------
-    // Window aggregation
+    // Flush logic
     // ---------------------------------------------------------
 
     private func flushIfReady() {
@@ -81,14 +90,15 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let frames = buffer
         buffer.removeAll()
 
-        emitWindowObservation(from: frames)
+        pendingWindow = buildWindow(from: frames)
+        emitTelemetry(pendingWindow!)
     }
 
     // ---------------------------------------------------------
-    // Build RSWindowObservation
+    // Window construction
     // ---------------------------------------------------------
 
-    private func emitWindowObservation(from frames: [RSFrameObservation]) {
+    private func buildWindow(from frames: [RSFrameObservation]) -> RSWindowObservation {
 
         let startTime = frames.first!.timestamp
         let endTime   = frames.last!.timestamp
@@ -98,88 +108,82 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let zMedian = zValues.sorted()[zValues.count / 2]
 
         let structuredFrames = frames.filter {
-            // Phase-2 provides explicit structure ratio
-            $0.structureRatio > 1.0
+            $0.structureRatio > 0
         }.count
 
-        let wideSpanFrames = frames.filter {
-            // Wide span = physically smeared RS envelope
-            $0.rowSpanFraction >= 0.75
-        }.count
+        let narrowSpanCount = frames.filter { $0.rowSpanFraction < 0.40 }.count
+        let moderateSpanCount = frames.filter { $0.rowSpanFraction >= 0.40 && $0.rowSpanFraction < 0.75 }.count
+        let wideSpanCount = frames.filter { $0.rowSpanFraction >= 0.75 }.count
 
         let wideSpanFraction =
-            Float(wideSpanFrames) / Float(frames.count)
+            Float(wideSpanCount) / Float(frames.count)
 
-        // Temporal consistency: how continuous the burst is
         let temporalConsistency =
             Float(frames.count) / Float(maxWindowFrames)
 
-        // Structure consistency: proportion of structured frames
         let structureConsistency =
             Float(structuredFrames) / Float(frames.count)
 
         let outcome: RSWindowOutcome
-
         if frames.count < minWindowFrames {
             outcome = .insufficientData
-        } else if structureConsistency < 0.3 {
+        } else if structuredFrames == 0 {
             outcome = .noiseLike
         } else {
             outcome = .structuredMotion
         }
 
-        let window = RSWindowObservation(
+        return RSWindowObservation(
             startTime: startTime,
             endTime: endTime,
             frameCount: frames.count,
             zmaxPeak: zPeak,
             zmaxMedian: zMedian,
             structuredFrameCount: structuredFrames,
+            narrowSpanCount: narrowSpanCount,
+            moderateSpanCount: moderateSpanCount,
+            wideSpanCount: wideSpanCount,
             wideSpanFraction: wideSpanFraction,
             temporalConsistency: temporalConsistency,
             structureConsistency: structureConsistency,
             outcome: outcome
         )
-
-        emitTelemetry(window)
     }
 
     // ---------------------------------------------------------
-    // Telemetry (explainable, non-authoritative)
+    // Telemetry (explainable, non‑authoritative)
     // ---------------------------------------------------------
 
     private func emitTelemetry(_ window: RSWindowObservation) {
 
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: 0x80,                  // PHASE3_WINDOW_SUMMARY
+            code: 0x80,                 // PHASE3_WINDOW_SUMMARY
             valueA: window.zmaxPeak,
             valueB: window.structureConsistency
         )
 
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: 0x81,                  // PHASE3_WINDOW_SPAN
+            code: 0x81,                 // PHASE3_WINDOW_SPAN
             valueA: window.wideSpanFraction,
             valueB: Float(window.frameCount)
         )
 
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: 0x82,                  // PHASE3_WINDOW_OUTCOME
+            code: 0x82,                 // PHASE3_WINDOW_OUTCOME
             valueA: outcomeCode(window.outcome),
             valueB: window.temporalConsistency
         )
 
-        // ---------------------------------------------------------
-        // Phase-4 gating (window-level, observability only)
-        // ---------------------------------------------------------
-
+        /// Phase‑4 is the FIRST layer allowed to emit pass/fail semantics.
+        /// Phase‑3 must remain purely descriptive.
         let verdict = RSPhase4Gate.evaluate(window)
 
         TelemetryRingBuffer.shared.push(
             phase: .detection,
-            code: verdict == .pass ? 0x90 : 0x91,   // PHASE4_PASS / PHASE4_FAIL
+            code: verdict == .pass ? 0x90 : 0x91,
             valueA: window.zmaxPeak,
             valueB: window.structureConsistency
         )

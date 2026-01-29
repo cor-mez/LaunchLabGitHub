@@ -52,16 +52,31 @@ def load_csv(path):
 
 def summarize(df):
     return {
+        "total": len(df),
         "fast9": len(df[df["code"] == FAST9_CODE]),
         "rs": len(df[df["code"] == RS_METRIC_CODE]),
         "phase3": len(df[df["code"] == PHASE3_SUMMARY_CODE]),
         "pass": len(df[df["code"] == PHASE4_PASS_CODE]),
         "fail": len(df[df["code"] == PHASE4_FAIL_CODE]),
-        "zmax_peak": df[df["code"] == PHASE3_SUMMARY_CODE]["valueA"].max()
+        "zmax_median": df[df["code"] == RS_METRIC_CODE]["valueA"].median()
+                        if not df[df["code"] == RS_METRIC_CODE].empty else 0,
+        "zmax_max": df[df["code"] == RS_METRIC_CODE]["valueA"].max()
+                        if not df[df["code"] == RS_METRIC_CODE].empty else 0,
+        "zwin_median": df[df["code"] == PHASE3_SUMMARY_CODE]["valueA"].median()
+                        if not df[df["code"] == PHASE3_SUMMARY_CODE].empty else 0,
+        "zwin_max": df[df["code"] == PHASE3_SUMMARY_CODE]["valueA"].max()
                         if not df[df["code"] == PHASE3_SUMMARY_CODE].empty else 0,
         "struct_peak": df[df["code"] == PHASE3_SUMMARY_CODE]["valueB"].max()
                         if not df[df["code"] == PHASE3_SUMMARY_CODE].empty else 0,
     }
+
+def verdict_text(s):
+    if s["pass"] > 0:
+        return "✅ Phase-4 PASS windows present"
+    elif s["rs"] > 0:
+        return "⚠️ RS signal present, no Phase-4 PASS"
+    else:
+        return "❌ No RS signal detected"
 
 # ============================================================
 # Batch PDF export
@@ -71,7 +86,7 @@ pdf_name = "rs_phase4_batch_analysis.pdf"
 print(f"\n📄 Writing batch analysis to {pdf_name}")
 
 summaries = []
-pass_windows = []   # for PASS-only overlay
+pass_windows = []
 
 with PdfPages(pdf_name) as pdf:
 
@@ -99,18 +114,27 @@ with PdfPages(pdf_name) as pdf:
 
         df = load_csv(path)
 
+        print(f"\n=== {label} ===")
+
         if df is None:
-            fig = plt.figure(figsize=(8.5, 11))
-            plt.axis("off")
-            plt.text(0.5, 0.5, f"{label}\n(No telemetry data)",
-                     ha="center", fontsize=14)
-            pdf.savefig(fig)
-            plt.close(fig)
+            print("No telemetry data.")
             continue
 
         summary = summarize(df)
-        summary["label"] = label
-        summaries.append(summary)
+        summaries.append((label, summary))
+
+        # ---------- Terminal summary ----------
+        print(f"Total telemetry events: {summary['total']}")
+        print(f"FAST9 frames:           {summary['fast9']}")
+        print(f"RS metric frames:       {summary['rs']}")
+        print(f"Phase-3 windows:        {summary['phase3']}")
+        print(f"Phase-4 PASS:           {summary['pass']}   FAIL: {summary['fail']}")
+        print(f"RS zmax median:         {summary['zmax_median']:.6f}")
+        print(f"RS zmax max:            {summary['zmax_max']:.6f}")
+        print(f"Window zmax median:     {summary['zwin_median']:.6f}")
+        print(f"Window zmax max:        {summary['zwin_max']:.6f}")
+        print(f"Peak structure cons.:   {summary['struct_peak']:.3f}")
+        print(f"Verdict: {verdict_text(summary)}")
 
         fast9   = df[df["code"] == FAST9_CODE]
         rs      = df[df["code"] == RS_METRIC_CODE]
@@ -133,7 +157,8 @@ with PdfPages(pdf_name) as pdf:
             f"RS frames: {summary['rs']}\n"
             f"Phase-3 windows: {summary['phase3']}\n"
             f"Phase-4 PASS: {summary['pass']}   FAIL: {summary['fail']}\n\n"
-            f"Peak window zmax: {summary['zmax_peak']:.4f}\n"
+            f"RS zmax median: {summary['zmax_median']:.4f}\n"
+            f"RS zmax max: {summary['zmax_max']:.4f}\n"
             f"Peak structure consistency: {summary['struct_peak']:.3f}"
         )
 
@@ -176,14 +201,14 @@ with PdfPages(pdf_name) as pdf:
         plt.close(fig)
 
     # --------------------------------------------------------
-    # PASS-only overlay comparison (NEW)
+    # PASS-only overlay comparison
     # --------------------------------------------------------
     if pass_windows:
         fig = plt.figure(figsize=(10, 6))
         for dfp in pass_windows:
             plt.scatter(
-                dfp["valueB"],   # structure consistency
-                dfp["valueA"],   # zmaxPeak
+                dfp["valueB"],
+                dfp["valueA"],
                 s=70,
                 alpha=0.8,
                 label=dfp["label"].iloc[0]
@@ -197,4 +222,12 @@ with PdfPages(pdf_name) as pdf:
         pdf.savefig(fig)
         plt.close(fig)
 
-print("✅ Batch PDF export complete.")
+print("\n✅ Batch PDF export complete.")
+
+# ============================================================
+# Final batch summary
+# ============================================================
+
+print("\n=== Batch Summary ===")
+for label, s in summaries:
+    print(f"{label}: {verdict_text(s)}")

@@ -133,4 +133,34 @@ final class TelemetryRingBuffer {
     func snapshot() -> [TelemetryEvent] {
         lock.withLock { buffer }
     }
+
+    /// Returns buffer contents sorted by timestamp (NON-HOT PATH ONLY)
+    func snapshotSorted() -> [TelemetryEvent] {
+        lock.withLock {
+            buffer
+                .filter { $0.timestamp > 0 }
+                .sorted { $0.timestamp < $1.timestamp }
+        }
+    }
+
+    /// Reset the buffer to initial state (NON-HOT PATH ONLY)
+    func reset() {
+        lock.withLock {
+            for i in 0..<capacity {
+                buffer[i] = TelemetryEvent(
+                    timestamp: 0,
+                    phase: .detection,
+                    code: 0,
+                    valueA: 0,
+                    valueB: 0
+                )
+            }
+            writeIndex = 0
+        }
+    }
+
+    /// Expose capacity for offline tooling sanity checks (NON-HOT PATH ONLY)
+    var maxCapacity: Int {
+        capacity
+    }
 }

@@ -8,23 +8,23 @@
 //  - Define the Phase‑3 aggregation contract
 //  - Describe WHAT a temporal RS window is
 //  - Describe HOW it may be characterized
-//  - NO authority
+//  - Observability‑only (no authority)
 //  - NO shot decisions
 //  - NO smoothing
-//  - NO concrete implementation
+//  - NO thresholds encoded here
 //
 //  This file is intentionally *stable* and should change rarely.
-//  All physics interpretation happens downstream.
+//  All physics interpretation and gating happens downstream.
 //
 
 import Foundation
 
 // ------------------------------------------------------------
-// MARK: - Phase‑3 Window Outcome
+// MARK: - Phase‑3 Window Outcome (DESCRIPTIVE ONLY)
 // ------------------------------------------------------------
 
 /// Descriptive characterization of a short RS time window.
-/// These are observational labels, not acceptance decisions.
+/// These labels describe observed structure, not acceptance.
 enum RSWindowOutcome: String {
     case insufficientData        // not enough frames to evaluate
     case noiseLike               // no coherent RS structure
@@ -35,7 +35,7 @@ enum RSWindowOutcome: String {
 // MARK: - Phase‑3 Window Observation
 // ------------------------------------------------------------
 
-/// Immutable summary of a short RS time window.
+/// Immutable summary of a short temporal RS window.
 /// Produced by a Phase‑3 aggregator and consumed by:
 /// - offline analysis
 /// - Phase‑4 gating
@@ -46,10 +46,10 @@ struct RSWindowObservation {
     // Time bounds
     // --------------------------------------------------------
 
-    /// Timestamp of first frame in window
+    /// Timestamp of first contributing frame
     let startTime: Double
 
-    /// Timestamp of last frame in window
+    /// Timestamp of last contributing frame
     let endTime: Double
 
     /// Number of Phase‑2 frames contributing
@@ -59,14 +59,27 @@ struct RSWindowObservation {
     // Envelope‑level observables
     // --------------------------------------------------------
 
-    /// Maximum RS shear observed in window
+    /// Maximum RS shear observed in the window
     let zmaxPeak: Float
 
-    /// Median RS shear across window
+    /// Median RS shear across the window
     let zmaxMedian: Float
 
     /// Number of frames exhibiting structured RS signal
     let structuredFrameCount: Int
+
+    // --------------------------------------------------------
+    // Span composition (NEW — descriptive, not gating)
+    // --------------------------------------------------------
+
+    /// Number of narrow‑span frames in window
+    let narrowSpanCount: Int
+
+    /// Number of moderate‑span frames in window
+    let moderateSpanCount: Int
+
+    /// Number of wide‑span frames in window
+    let wideSpanCount: Int
 
     /// Fraction of frames classified as wide‑span
     let wideSpanFraction: Float
@@ -85,7 +98,7 @@ struct RSWindowObservation {
     // Descriptive outcome
     // --------------------------------------------------------
 
-    /// High‑level characterization of the window
+    /// High‑level observational classification of the window
     let outcome: RSWindowOutcome
 }
 
@@ -98,12 +111,14 @@ struct RSWindowObservation {
 /// Implementations MUST:
 /// - remain observability‑only
 /// - ingest Phase‑2 frames without reinterpretation
+/// - aggregate frames into short temporal windows
 /// - emit window‑level observations only
 ///
 /// Implementations MUST NOT:
 /// - smooth frames
 /// - infer shot outcomes
 /// - enforce product‑level thresholds
+/// - emit pass/fail decisions
 protocol RSPhase3Aggregating {
 
     /// Ingest a single Phase‑2 RS frame.
@@ -114,6 +129,6 @@ protocol RSPhase3Aggregating {
     /// Returns nil if no window is ready.
     func poll() -> RSWindowObservation?
 
-    /// Reset all internal state.
+    /// Reset all internal aggregation state.
     func reset()
 }
