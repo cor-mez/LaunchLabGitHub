@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import QuartzCore
 
 final class RSPhase3Aggregator: RSPhase3Aggregating {
 
@@ -61,8 +62,19 @@ final class RSPhase3Aggregator: RSPhase3Aggregating {
     // ---------------------------------------------------------
 
     func poll() -> RSWindowObservation? {
-        let window = pendingWindow
+        guard let window = pendingWindow else {
+            return nil
+        }
+
         pendingWindow = nil
+
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: 0x80,                    // PHASE3_WINDOW_SUMMARY
+            valueA: window.zmaxPeak,
+            valueB: window.temporalConsistency
+        )
+
         return window
     }
 

@@ -79,6 +79,11 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     func stop() {
         queue.async {
+            // Flush any pending Phase-3 windows BEFORE stopping/resetting.
+            while let window = self.phase3Aggregator.poll() {
+                self.emitWindowTelemetry(window)
+            }
+
             if self.session.isRunning {
                 self.session.stopRunning()
             }
@@ -120,7 +125,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
         ]
 
         // Phase‑3 requires short burst continuity; do not discard late frames here
-        output.alwaysDiscardsLateVideoFrames = false
+        output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
 
         if session.canAddOutput(output) {
@@ -182,6 +187,39 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
         } catch {
             fatalError("Failed to lock capture regime: \(error)")
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // MARK: - Phase-3/4 Telemetry Emission (NON-AUTHORITATIVE)
+    // ---------------------------------------------------------------------
+
+    private func emitWindowTelemetry(_ window: RSWindowObservation) {
+
+        // DEBUG: Phase‑3 window actually emitted
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: 0x7E,          // DEBUG_PHASE3_WINDOW
+            valueA: Float(window.frameCount),
+            valueB: window.zmaxPeak
+        )
+
+        // Phase‑3 window telemetry
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: 0x80,                 // PHASE3_WINDOW
+            valueA: window.zmaxPeak,
+            valueB: window.structureConsistency
+        )
+
+        // Phase‑4 gate evaluation
+        let verdict = RSPhase4Gate.evaluate(window)
+
+        TelemetryRingBuffer.shared.push(
+            phase: .detection,
+            code: verdict == .pass ? 0x90 : 0x91,   // PHASE4_PASS / PHASE4_FAIL
+            valueA: window.zmaxPeak,
+            valueB: window.structureConsistency
+        )
     }
 
     // ---------------------------------------------------------------------
@@ -278,32 +316,7 @@ final class Phase2CaptureRSProbe: NSObject, AVCaptureVideoDataOutputSampleBuffer
             self.phase3Aggregator.ingest(observation)
 
             while let window = self.phase3Aggregator.poll() {
-
-                // DEBUG: Phase‑3 window actually emitted
-                TelemetryRingBuffer.shared.push(
-                    phase: .detection,
-                    code: 0x7E,          // DEBUG_PHASE3_WINDOW
-                    valueA: Float(window.frameCount),
-                    valueB: window.zmaxPeak
-                )
-
-                // Phase‑3 window telemetry
-                TelemetryRingBuffer.shared.push(
-                    phase: .detection,
-                    code: 0x80,                 // PHASE3_WINDOW
-                    valueA: window.zmaxPeak,
-                    valueB: window.structureConsistency
-                )
-
-                // Phase‑4 gate evaluation
-                let verdict = RSPhase4Gate.evaluate(window)
-
-                TelemetryRingBuffer.shared.push(
-                    phase: .detection,
-                    code: verdict == .pass ? 0x90 : 0x91,
-                    valueA: window.zmaxPeak,
-                    valueB: window.structureConsistency
-                )
+                self.emitWindowTelemetry(window)
             }
         }
     }

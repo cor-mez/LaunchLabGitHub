@@ -23,6 +23,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     private let maxWindowFrames: Int = 8
     private let minWindowFrames: Int = 3
+    private let maxGapSec: Double = 0.025
 
     // ---------------------------------------------------------
     // State
@@ -30,12 +31,23 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     private var buffer: [RSFrameObservation] = []
     private var pendingWindow: RSWindowObservation?
+    private var lastTimestamp: Double?
 
     // ---------------------------------------------------------
     // Ingest Phase‑2 frames
     // ---------------------------------------------------------
 
     func ingest(_ frame: RSFrameObservation) {
+
+        // If there is a time gap, treat it as a burst boundary.
+        if let last = lastTimestamp {
+            let dt = frame.timestamp - last
+            if dt > maxGapSec {
+                flushIfReady()
+                buffer.removeAll()
+            }
+        }
+        lastTimestamp = frame.timestamp
 
         // Always keep a rolling buffer
         buffer.append(frame)
@@ -45,15 +57,19 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
             buffer.removeFirst()
         }
 
-        // Count observable frames inside the window
-        let observableCount = buffer.filter {
-            if case .observable = $0.outcome { return true }
-            return false
-        }.count
-
-        // Emit window as soon as we have enough observable structure
-        if observableCount >= minWindowFrames {
+        // Burst termination triggers (no smoothing):
+        //  - buffer full
+        //  - an explicit refusal arrives
+        if buffer.count >= maxWindowFrames {
             flushIfReady()
+            buffer.removeAll()
+            return
+        }
+
+        if case .refused = frame.outcome {
+            flushIfReady()
+            buffer.removeAll()
+            return
         }
     }
 
@@ -74,6 +90,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
     func reset() {
         buffer.removeAll()
         pendingWindow = nil
+        lastTimestamp = nil
     }
 
     // ---------------------------------------------------------
@@ -82,34 +99,38 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
 
     private func flushIfReady() {
 
-        let frames = buffer.filter {
+        guard !buffer.isEmpty else { return }
+
+        // Only emit if we have enough observable frames within the burst.
+        let observableCount = buffer.filter {
             if case .observable = $0.outcome { return true }
             return false
-        }
+        }.count
 
-        guard frames.count >= minWindowFrames else {
+        guard observableCount >= minWindowFrames else {
             return
         }
 
-        let window = buildWindow(from: frames)
+        let startTime = buffer.first!.timestamp
+        let endTime = buffer.last!.timestamp
+
+        let window = buildWindow(from: buffer, startTime: startTime, endTime: endTime)
         pendingWindow = window
         emitTelemetry(window)
-
-        // Clear buffer AFTER emission
-        buffer.removeAll()
     }
 
     // ---------------------------------------------------------
     // Window construction
     // ---------------------------------------------------------
 
-    private func buildWindow(from frames: [RSFrameObservation]) -> RSWindowObservation {
-
-        let startTime = frames.first!.timestamp
-        let endTime   = frames.last!.timestamp
+    private func buildWindow(
+        from frames: [RSFrameObservation],
+        startTime: Double,
+        endTime: Double
+    ) -> RSWindowObservation {
 
         let zValues = frames.map { $0.zmax }
-        let zPeak   = zValues.max() ?? 0
+        let zPeak = zValues.max() ?? 0
         let zMedian = zValues.sorted()[zValues.count / 2]
 
         let structuredFrames = frames.filter {
@@ -121,14 +142,13 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let moderateSpanCount = frames.filter { $0.rowSpanFraction >= 0.40 && $0.rowSpanFraction < 0.75 }.count
         let wideSpanCount = frames.filter { $0.rowSpanFraction >= 0.75 }.count
 
-        let wideSpanFraction =
-            Float(wideSpanCount) / Float(frames.count)
+        let wideSpanFraction = Float(wideSpanCount) / Float(frames.count)
 
-        let temporalConsistency =
-            min(1.0, Float(frames.count) / Float(maxWindowFrames))
+        // Temporal consistency here is a descriptive metric: fraction of max window occupied.
+        let temporalConsistency = min(1.0, Float(frames.count) / Float(maxWindowFrames))
 
-        let structureConsistency =
-            Float(structuredFrames) / Float(frames.count)
+        // Structure consistency: fraction of frames in this window that are structured (observable).
+        let structureConsistency = Float(structuredFrames) / Float(frames.count)
 
         let outcome: RSWindowOutcome
         if frames.count < minWindowFrames {
