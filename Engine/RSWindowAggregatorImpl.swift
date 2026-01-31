@@ -107,6 +107,11 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
             return false
         }.count
 
+        let observableFrames = buffer.filter {
+            if case .observable = $0.outcome { return true }
+            return false
+        }
+
         guard observableCount >= minWindowFrames else {
             return
         }
@@ -114,7 +119,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let startTime = buffer.first!.timestamp
         let endTime = buffer.last!.timestamp
 
-        let window = buildWindow(from: buffer, startTime: startTime, endTime: endTime)
+        let window = buildWindow(from: observableFrames, startTime: startTime, endTime: endTime)
         pendingWindow = window
         emitTelemetry(window)
     }
@@ -133,10 +138,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let zPeak = zValues.max() ?? 0
         let zMedian = zValues.sorted()[zValues.count / 2]
 
-        let structuredFrames = frames.filter {
-            if case .observable = $0.outcome { return true }
-            return false
-        }.count
+        let structuredFrames = frames.count
 
         let narrowSpanCount = frames.filter { $0.rowSpanFraction < 0.40 }.count
         let moderateSpanCount = frames.filter { $0.rowSpanFraction >= 0.40 && $0.rowSpanFraction < 0.75 }.count
@@ -148,7 +150,7 @@ final class RSWindowAggregatorImpl: RSPhase3Aggregating {
         let temporalConsistency = min(1.0, Float(frames.count) / Float(maxWindowFrames))
 
         // Structure consistency: fraction of frames in this window that are structured (observable).
-        let structureConsistency = Float(structuredFrames) / Float(frames.count)
+        let structureConsistency: Float = 1.0
 
         let outcome: RSWindowOutcome
         if frames.count < minWindowFrames {
